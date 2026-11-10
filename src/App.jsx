@@ -482,10 +482,13 @@ function OrganizerView({
   isRegistrationClosed,
   onSendClosureNotifications,
   isSendingClosureNotifications,
-  closureNotificationMessage,
   canGenerateMatches,
   isGeneratingMatches,
   onGenerateMatches,
+  canSendMatchNotifications,
+  onSendMatchNotifications,
+  isSendingMatchNotifications,
+  matchNotificationMessage,
   matchGroups,
   matchesLoad,
   matchMessage,
@@ -727,16 +730,6 @@ function OrganizerView({
           </button>
         </div>
       )}
-      {closureNotificationMessage && (
-        <p
-          className={`form-message ${closureNotificationMessage.type}`}
-          role={
-            closureNotificationMessage.type === 'error' ? 'alert' : 'status'
-          }
-        >
-          {closureNotificationMessage.text}
-        </p>
-      )}
       {matchingCompleted || matchGroups.length > 0 ? (
         <div className="matching-results">
           <div className="organizer-section-heading">
@@ -787,6 +780,60 @@ function OrganizerView({
               ))}
             </div>
           )}
+          {!matchingCompleted &&
+            eventStatus === 'loaded' &&
+            !isRegistrationOpen && (
+              <div className="matching-panel">
+                <div className="matching-copy">
+                  <span className="matching-icon" aria-hidden="true">✳</span>
+                  <div>
+                    <strong>Coffee Match</strong>
+                    <p>
+                      {participantsLoad.status === 'loaded' &&
+                      confirmedParticipants.length < 2
+                        ? 'Servono almeno 2 partecipanti confermati per generare i Coffee Match.'
+                        : 'Le iscrizioni sono chiuse. È possibile preparare gli abbinamenti.'}
+                    </p>
+                  </div>
+                </div>
+                {canGenerateMatches && (
+                  <button
+                    className="button button-primary"
+                    disabled={isGeneratingMatches}
+                    onClick={onGenerateMatches}
+                    type="button"
+                  >
+                    {isGeneratingMatches
+                      ? 'Generazione in corso…'
+                      : 'Genera Coffee Match'}
+                  </button>
+                )}
+              </div>
+            )}
+          {canSendMatchNotifications && (
+            <div className="matching-panel">
+              <div className="matching-copy">
+                <span className="matching-icon" aria-hidden="true">✉</span>
+                <div>
+                  <strong>Notifiche Coffee Match</strong>
+                  <p>
+                    Invia gli abbinamenti ai partecipanti che non hanno ancora
+                    ricevuto l’email.
+                  </p>
+                </div>
+              </div>
+              <button
+                className="button button-primary"
+                disabled={isSendingMatchNotifications || isGeneratingMatches}
+                onClick={onSendMatchNotifications}
+                type="button"
+              >
+                {isSendingMatchNotifications
+                  ? 'Invio notifiche...'
+                  : 'Invia notifiche Coffee Match'}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         eventStatus === 'loaded' &&
@@ -799,16 +846,13 @@ function OrganizerView({
                 <strong>Coffee Match</strong>
                 <p>
                   {participantsLoad.status === 'loaded' &&
-                  participants.filter((participant) => participant.confirmedAt)
-                    .length < 2
-                    ? 'Servono almeno due partecipanti confermati per generare i match.'
+                  confirmedParticipants.length < 2
+                    ? 'Servono almeno 2 partecipanti confermati per generare i Coffee Match.'
                     : 'Le iscrizioni sono chiuse. È possibile preparare gli abbinamenti.'}
                 </p>
               </div>
             </div>
-            {canGenerateMatches &&
-              matchesLoad.status !== 'loaded' &&
-              matchGroups.length === 0 && (
+            {canGenerateMatches && (
               <button
                 className="button button-primary"
                 disabled={isGeneratingMatches}
@@ -829,6 +873,16 @@ function OrganizerView({
           role={matchMessage.type === 'error' ? 'alert' : 'status'}
         >
           {matchMessage.text}
+        </p>
+      )}
+      {matchNotificationMessage && (
+        <p
+          className={`form-message ${matchNotificationMessage.type}`}
+          role={
+            matchNotificationMessage.type === 'error' ? 'alert' : 'status'
+          }
+        >
+          {matchNotificationMessage.text}
         </p>
       )}
     </main>
@@ -852,6 +906,10 @@ function App() {
   })
   const [isGeneratingMatches, setIsGeneratingMatches] = useState(false)
   const [matchMessage, setMatchMessage] = useState(null)
+  const [isSendingMatchNotifications, setIsSendingMatchNotifications] =
+    useState(false)
+  const [matchNotificationMessage, setMatchNotificationMessage] =
+    useState(null)
   const [isOrganizerView, setIsOrganizerView] = useState(false)
   const [supabaseClient, setSupabaseClient] = useState(null)
   const [eventState, setEventState] = useState({
@@ -874,8 +932,6 @@ function App() {
   const [closureMessage, setClosureMessage] = useState(null)
   const [isSendingClosureNotifications, setIsSendingClosureNotifications] =
     useState(false)
-  const [closureNotificationMessage, setClosureNotificationMessage] =
-    useState(null)
   const [isResettingEvent, setIsResettingEvent] = useState(false)
   const [resetMessage, setResetMessage] = useState(null)
   const [resetVerificationMessage, setResetVerificationMessage] = useState('')
@@ -896,6 +952,7 @@ function App() {
   const isClosingRegistrationsRef = useRef(false)
   const isSendingClosureNotificationsRef = useRef(false)
   const isGeneratingMatchesRef = useRef(false)
+  const isSendingMatchNotificationsRef = useRef(false)
   const isResettingEventRef = useRef(false)
   const isSavingEventTitleRef = useRef(false)
   const confirmedTokensRef = useRef(new Set())
@@ -1413,6 +1470,7 @@ function App() {
       setMatchGroups([])
       setMatchesLoad({ userId: authenticatedUserId, status: 'loading' })
       setMatchMessage(null)
+      setMatchNotificationMessage(null)
       setClosureMessage(null)
       setEventState({
         status: 'loaded',
@@ -1577,7 +1635,7 @@ function App() {
 
     isSendingClosureNotificationsRef.current = true
     setIsSendingClosureNotifications(true)
-    setClosureNotificationMessage(null)
+    setClosureMessage(null)
 
     try {
       const {
@@ -1586,7 +1644,7 @@ function App() {
       } = await supabaseClient.auth.getSession()
 
       if (sessionError || !session?.access_token) {
-        setClosureNotificationMessage({
+        setClosureMessage({
           type: 'error',
           text: 'La sessione organizzatore non è valida. Accedi nuovamente.',
         })
@@ -1606,7 +1664,7 @@ function App() {
       )
 
       if (error) {
-        setClosureNotificationMessage({
+        setClosureMessage({
           type: 'error',
           text: 'Non è stato possibile inviare le email di notifica.',
         })
@@ -1618,33 +1676,33 @@ function App() {
       const failed = Number(data?.summary?.failed ?? 0)
 
       if (recipients === 0) {
-        setClosureNotificationMessage({
+        setClosureMessage({
           type: 'success',
           text: 'Nessuna notifica di chiusura ancora da inviare.',
         })
       } else if (sent === recipients && failed === 0 && recipients > 0) {
-        setClosureNotificationMessage({
+        setClosureMessage({
           type: 'success',
           text: `Email inviate a ${sent} partecipanti su ${recipients}.`,
         })
       } else if (sent > 0 && failed > 0) {
-        setClosureNotificationMessage({
+        setClosureMessage({
           type: 'error',
           text: `Email inviate a ${sent} partecipanti su ${recipients}. ${failed} invii non riusciti.`,
         })
       } else if (sent === 0 && failed > 0) {
-        setClosureNotificationMessage({
+        setClosureMessage({
           type: 'error',
           text: `Non è stato possibile inviare ${failed} email di notifica.`,
         })
       } else {
-        setClosureNotificationMessage({
+        setClosureMessage({
           type: 'error',
           text: 'Non è stato possibile inviare le email di notifica.',
         })
       }
     } catch {
-      setClosureNotificationMessage({
+      setClosureMessage({
         type: 'error',
         text: 'Non è stato possibile inviare le email di notifica.',
       })
@@ -1824,6 +1882,144 @@ function App() {
     }
   }
 
+  async function sendCoffeeMatchNotifications(isRetry = false) {
+    try {
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabaseClient.auth.getSession()
+
+      if (sessionError || !session?.access_token) {
+        return {
+          type: 'error',
+          text: isRetry
+            ? 'La sessione organizzatore non è valida. Accedi nuovamente.'
+            : 'Coffee Match generati, ma non è stato possibile inviare le email perché la sessione organizzatore non è valida.',
+        }
+      }
+
+      const { data, error } = await supabaseClient.functions.invoke(
+        'notify-coffee-matches',
+        {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: {
+            event_id: eventId,
+          },
+        },
+      )
+
+      if (error) {
+        return {
+          type: 'error',
+          text: isRetry
+            ? 'Non è stato possibile inviare le email con gli abbinamenti.'
+            : 'Coffee Match generati, ma non è stato possibile inviare le email con gli abbinamenti.',
+        }
+      }
+
+      const recipients = Number(data?.summary?.recipients ?? 0)
+      const sent = Number(data?.summary?.sent ?? 0)
+      const failed = Number(data?.summary?.failed ?? 0)
+      const validSummary = [recipients, sent, failed].every(
+        (count) => Number.isInteger(count) && count >= 0,
+      )
+
+      if (!validSummary) {
+        return {
+          type: 'error',
+          text: isRetry
+            ? 'Non è stato possibile inviare le email con gli abbinamenti.'
+            : 'Coffee Match generati, ma non è stato possibile inviare le email con gli abbinamenti.',
+        }
+      }
+
+      if (recipients === 0) {
+        return {
+          type: 'success',
+          text: isRetry
+            ? 'Tutti i partecipanti hanno già ricevuto il proprio Coffee Match.'
+            : 'Coffee Match generati. Nessuna email di abbinamento ancora da inviare.',
+        }
+      }
+
+      if (sent === recipients && failed === 0 && recipients > 0) {
+        return {
+          type: 'success',
+          text: isRetry
+            ? `Email inviate a ${sent} partecipanti su ${recipients}.`
+            : `Coffee Match generati. Email inviate a ${sent} partecipanti su ${recipients}.`,
+        }
+      }
+
+      if (sent > 0 && failed > 0) {
+        return {
+          type: 'error',
+          text: isRetry
+            ? `Email inviate a ${sent} partecipanti su ${recipients}. ${failed} invii non riusciti.`
+            : `Coffee Match generati. Email inviate a ${sent} partecipanti su ${recipients}. ${failed} invii non riusciti.`,
+        }
+      }
+
+      if (sent === 0 && failed > 0) {
+        return {
+          type: 'error',
+          text: isRetry
+            ? `Non è stato possibile inviare ${failed} email con gli abbinamenti.`
+            : `Coffee Match generati, ma non è stato possibile inviare ${failed} email con gli abbinamenti.`,
+        }
+      }
+
+      return {
+        type: 'error',
+        text: isRetry
+          ? 'Non è stato possibile inviare le email con gli abbinamenti.'
+          : 'Coffee Match generati, ma non è stato possibile inviare le email con gli abbinamenti.',
+      }
+    } catch {
+      return {
+        type: 'error',
+        text: isRetry
+          ? 'Non è stato possibile inviare le email con gli abbinamenti.'
+          : 'Coffee Match generati, ma non è stato possibile inviare le email con gli abbinamenti.',
+      }
+    }
+  }
+
+  async function handleSendMatchNotifications() {
+    if (
+      isSendingMatchNotificationsRef.current ||
+      isGeneratingMatchesRef.current ||
+      !supabaseClient ||
+      !authSession ||
+      !authenticatedUserId ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId ||
+      eventState.status !== 'loaded' ||
+      eventState.registrationOpen !== false ||
+      eventState.matchingCompleted !== true
+    ) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      'Vuoi inviare gli abbinamenti ai partecipanti che non hanno ancora ricevuto l’email?',
+    )
+    if (!confirmed) return
+
+    isSendingMatchNotificationsRef.current = true
+    setIsSendingMatchNotifications(true)
+    setMatchNotificationMessage(null)
+
+    try {
+      setMatchNotificationMessage(await sendCoffeeMatchNotifications(true))
+    } finally {
+      isSendingMatchNotificationsRef.current = false
+      setIsSendingMatchNotifications(false)
+    }
+  }
+
   async function handleGenerateMatches() {
     if (
       isGeneratingMatchesRef.current ||
@@ -1852,6 +2048,7 @@ function App() {
 
     setIsGeneratingMatches(true)
     setMatchMessage(null)
+    setMatchNotificationMessage(null)
     setMatchGroups([])
     setMatchesLoad({ userId: authenticatedUserId, status: 'loading' })
 
@@ -1958,10 +2155,7 @@ function App() {
 
       setMatchGroups(groupPersistedMatches(savedMatches, matchingParticipants))
       setMatchesLoad({ userId: authenticatedUserId, status: 'loaded' })
-      setMatchMessage({
-        type: 'success',
-        text: 'Coffee Match generati e salvati.',
-      })
+      setMatchMessage(await sendCoffeeMatchNotifications())
     } catch {
       setMatchMessage({
         type: 'error',
@@ -2033,8 +2227,14 @@ function App() {
     eventState.matchingCompleted === false &&
     participantsLoad.userId === authenticatedUserId &&
     participantsLoad.status === 'loaded' &&
-    participants.filter((participant) => participant.confirmedAt).length >= 2 &&
-    currentMatchesLoad.status !== 'loaded'
+    participants.filter((participant) => participant.confirmedAt).length >= 2
+  const canSendMatchNotifications =
+    Boolean(authSession) &&
+    ownerStatus === 'authorized' &&
+    ownerCheck.userId === authenticatedUserId &&
+    eventState.status === 'loaded' &&
+    eventState.registrationOpen === false &&
+    eventState.matchingCompleted === true
 
   function handleViewToggle() {
     setEventState((current) => ({ ...current, status: 'loading' }))
@@ -2123,10 +2323,13 @@ function App() {
               isRegistrationClosed={isRegistrationClosed}
               onSendClosureNotifications={handleSendClosureNotifications}
               isSendingClosureNotifications={isSendingClosureNotifications}
-              closureNotificationMessage={closureNotificationMessage}
               canGenerateMatches={canGenerateMatches}
               isGeneratingMatches={isGeneratingMatches}
               onGenerateMatches={handleGenerateMatches}
+              canSendMatchNotifications={canSendMatchNotifications}
+              onSendMatchNotifications={handleSendMatchNotifications}
+              isSendingMatchNotifications={isSendingMatchNotifications}
+              matchNotificationMessage={matchNotificationMessage}
               matchGroups={currentMatchGroups}
               matchesLoad={currentMatchesLoad}
               matchMessage={matchMessage}
