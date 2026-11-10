@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const initialForm = { firstName: '', lastName: '', email: '' }
+const eventId = '46869c0f-21ae-4d70-9865-5f72d87c1153'
 
-function shuffleParticipants(participants) {
+function createMatchRows(participants) {
   const shuffled = [...participants]
 
   for (let index = shuffled.length - 1; index > 0; index -= 1) {
@@ -14,19 +15,53 @@ function shuffleParticipants(participants) {
     ]
   }
 
-  const matches = []
+  if (new Set(shuffled.map((participant) => participant.id)).size !== shuffled.length) {
+    throw new Error('Duplicate participant IDs')
+  }
+
+  const groups = []
   const trioStart =
     shuffled.length % 2 === 1 ? Math.max(shuffled.length - 3, 0) : shuffled.length
 
   for (let index = 0; index < trioStart; index += 2) {
-    matches.push(shuffled.slice(index, index + 2))
+    groups.push(shuffled.slice(index, index + 2))
   }
 
   if (shuffled.length % 2 === 1 && shuffled.length >= 3) {
-    matches.push(shuffled.slice(-3))
+    groups.push(shuffled.slice(-3))
   }
 
-  return matches
+  return groups.flatMap((group, index) =>
+    group.map((participant) => ({
+      group_number: index + 1,
+      participant_id: participant.id,
+    })),
+  )
+}
+
+function groupPersistedMatches(matchRows, participants) {
+  const participantsById = new Map(
+    participants.map((participant) => [participant.id, participant]),
+  )
+  const groups = new Map()
+
+  for (const match of matchRows) {
+    const participant = participantsById.get(match.participant_id)
+    if (!participant) throw new Error('Match references an unknown participant')
+
+    if (!groups.has(match.group_number)) {
+      groups.set(match.group_number, [])
+    }
+
+    groups.get(match.group_number).push(participant)
+  }
+
+  return [...groups.entries()]
+    .sort(([groupNumberA], [groupNumberB]) => groupNumberA - groupNumberB)
+    .map(([groupNumber, groupParticipants]) => ({
+      groupNumber,
+      participants: groupParticipants,
+    }))
 }
 
 function CoffeeMark() {
@@ -40,7 +75,13 @@ function CoffeeMark() {
   )
 }
 
-function SignupForm({ isClosed, participants, onSignup }) {
+function SignupForm({
+  isClosed,
+  isEventReady,
+  isEventLoading,
+  participants,
+  onSignup,
+}) {
   const [form, setForm] = useState(initialForm)
   const [message, setMessage] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -54,7 +95,7 @@ function SignupForm({ isClosed, participants, onSignup }) {
   async function handleSubmit(event) {
     event.preventDefault()
 
-    if (isClosed || isSubmitting) return
+    if (isClosed || !isEventReady || isSubmitting) return
 
     const normalizedEmail = form.email.trim().toLowerCase()
     const emailExists = participants.some(
@@ -162,12 +203,18 @@ function SignupForm({ isClosed, participants, onSignup }) {
         <div className="closed-notice" role="status">
           <span className="notice-icon" aria-hidden="true">✓</span>
           <div>
-            <strong>Le iscrizioni sono chiuse</strong>
-            <p>Gli abbinamenti sono in preparazione. A presto!</p>
+            <strong>Le iscrizioni sono chiuse.</strong>
           </div>
         </div>
       ) : (
         <form className="signup-form" onSubmit={handleSubmit}>
+          {!isEventReady && (
+            <p className="form-message error" role="status">
+              {isEventLoading
+                ? 'Verifica dello stato delle iscrizioni…'
+                : 'Non è stato possibile verificare lo stato delle iscrizioni.'}
+            </p>
+          )}
           <div className="field-row">
             <label className="field">
               <span>Nome</span>
@@ -211,11 +258,15 @@ function SignupForm({ isClosed, participants, onSignup }) {
           )}
           <button
             className="button button-primary signup-button"
-            disabled={isSubmitting}
+            disabled={isSubmitting || !isEventReady}
             type="submit"
           >
-            {isSubmitting ? 'Iscrizione in corso...' : 'Iscriviti al Coffee Match'}
-            {!isSubmitting && <span aria-hidden="true">→</span>}
+            {isSubmitting
+              ? 'Iscrizione in corso...'
+              : isEventLoading
+                ? 'Verifica iscrizioni...'
+                : 'Iscriviti al Coffee Match'}
+            {!isSubmitting && isEventReady && <span aria-hidden="true">→</span>}
           </button>
           <p className="privacy-note">
             I tuoi dati servono solo per organizzare gli abbinamenti di questo
@@ -310,65 +361,20 @@ function OrganizerAccessStatus({ message }) {
   )
 }
 
-function MatchResults({ matches }) {
-  if (matches.length === 0) {
-    return (
-      <div className="empty-matches">
-        Non ci sono ancora partecipanti sufficienti per creare un match.
-        Servono almeno due persone.
-      </div>
-    )
-  }
-
-  return (
-    <section className="matches-section">
-      <div className="organizer-section-heading">
-        <div>
-          <div className="section-eyebrow">Gli incontri di oggi</div>
-          <h3>Coffee Match</h3>
-        </div>
-        <span className="match-count">
-          {matches.length} {matches.length === 1 ? 'match' : 'match'}
-        </span>
-      </div>
-      <div className="match-grid">
-        {matches.map((match, index) => (
-          <article className="match-card" key={match.map((person) => person.email).join('-')}>
-            <div className="match-card-top">
-              <span className="match-number">
-                {String(index + 1).padStart(2, '0')}
-              </span>
-              <span className="match-coffee" aria-hidden="true">☕</span>
-            </div>
-            <div className="match-people">
-              {match.map((person, personIndex) => (
-                <div className="match-person" key={person.email}>
-                  {personIndex > 0 && (
-                    <span className="match-connector" aria-hidden="true">
-                      &
-                    </span>
-                  )}
-                  <strong>{person.firstName} {person.lastName}</strong>
-                  <span>{person.email}</span>
-                </div>
-              ))}
-            </div>
-            {match.length === 3 && (
-              <span className="group-note">Un tavolo da tre</span>
-            )}
-          </article>
-        ))}
-      </div>
-    </section>
-  )
-}
-
 function OrganizerView({
-  isClosed,
-  matches,
+  eventStatus,
+  isRegistrationOpen,
+  matchingCompleted,
   onLogout,
-  onCloseAndMatch,
-  onReset,
+  onCloseRegistrations,
+  isClosingRegistrations,
+  closureMessage,
+  canGenerateMatches,
+  isGeneratingMatches,
+  onGenerateMatches,
+  matchGroups,
+  matchesLoad,
+  matchMessage,
   participants,
   participantsLoad,
 }) {
@@ -379,14 +385,6 @@ function OrganizerView({
         ? '…'
         : '—'
 
-  function handleReset() {
-    const confirmed = window.confirm(
-      'Vuoi iniziare un nuovo evento? Tutti gli iscritti e i match attuali verranno cancellati.',
-    )
-
-    if (confirmed) onReset()
-  }
-
   return (
     <main className="organizer-page">
       <div className="organizer-header">
@@ -396,7 +394,12 @@ function OrganizerView({
           <p>Gestisci le iscrizioni e prepara gli incontri dell&apos;evento.</p>
         </div>
         <div className="organizer-header-actions">
-          <button className="button button-quiet" onClick={handleReset} type="button">
+          <button
+            className="button button-quiet"
+            disabled
+            type="button"
+            title="La funzione sarà disponibile in seguito."
+          >
             <span aria-hidden="true">↻</span>
             Nuovo evento / Reset
           </button>
@@ -414,22 +417,41 @@ function OrganizerView({
         </article>
         <article className="stat-card status-stat">
           <span className="stat-label">Stato iscrizioni</span>
-          <strong className={`status-pill ${isClosed ? 'closed' : 'open'}`}>
+          <strong className={`status-pill ${isRegistrationOpen ? 'open' : 'closed'}`}>
             <span className="status-dot" />
-            {isClosed ? 'Chiuse' : 'Aperte'}
+            {eventStatus === 'loading'
+              ? 'Verifica…'
+              : eventStatus === 'error'
+                ? 'Non disponibili'
+                : isRegistrationOpen
+                  ? 'Aperte'
+                  : 'Chiuse'}
           </strong>
           <span className="stat-caption">
-            {isClosed ? 'Non è possibile aggiungere partecipanti' : 'Pronte ad accogliere nuovi partecipanti'}
+            {eventStatus === 'loading'
+              ? 'Verifica dello stato evento in corso'
+              : eventStatus === 'error'
+                ? 'Ritorna alla pagina pubblica per riprovare'
+                : isRegistrationOpen
+                  ? 'Pronte ad accogliere nuovi partecipanti'
+                  : 'Non è possibile aggiungere partecipanti'}
           </span>
         </article>
         <article className="stat-card">
-          <span className="stat-label">Coffee Match</span>
-          <strong className="stat-number">
-            {matches ? matches.length : '—'}
+          <span className="stat-label">Stato Coffee Match</span>
+          <strong className="stat-number stat-number-label">
+            {eventStatus !== 'loaded'
+              ? 'Verifica…'
+              : matchingCompleted
+                ? 'Completato'
+                : 'In attesa'}
           </strong>
-          <span className="stat-caption">incontri generati</span>
+          <span className="stat-caption">La generazione dei match sarà disponibile in seguito</span>
         </article>
       </div>
+      <span className="reset-unavailable reset-description">
+        La funzione sarà disponibile in seguito.
+      </span>
 
       <section className="participants-section">
         <div className="organizer-section-heading">
@@ -486,39 +508,126 @@ function OrganizerView({
         )}
       </section>
 
-      <div className="matching-panel">
-        <div className="matching-copy">
-          <span className="matching-icon" aria-hidden="true">✳</span>
-          <div>
-            <strong>Pronto a far incontrare la community?</strong>
-            <p>Chiudi le iscrizioni e crea abbinamenti casuali in un clic.</p>
+      {eventStatus === 'loaded' && isRegistrationOpen && (
+        <div className="matching-panel">
+          <div className="matching-copy">
+            <span className="matching-icon" aria-hidden="true">✳</span>
+            <div>
+              <strong>Pronto a chiudere le iscrizioni?</strong>
+              <p>Dopo la chiusura non sarà possibile registrare nuovi partecipanti.</p>
+            </div>
           </div>
+          <button
+            className="button button-primary"
+            disabled={isClosingRegistrations}
+            onClick={onCloseRegistrations}
+            type="button"
+          >
+            {isClosingRegistrations ? 'Chiusura in corso…' : 'Chiudi iscrizioni'}
+          </button>
         </div>
-        <button
-          className="button button-primary"
-          disabled={
-            isClosed ||
-            participantsLoad.status !== 'loaded' ||
-            participants.length < 2
-          }
-          onClick={onCloseAndMatch}
-          type="button"
+      )}
+      {closureMessage && (
+        <p
+          className={`form-message ${closureMessage.type}`}
+          role={closureMessage.type === 'error' ? 'alert' : 'status'}
         >
-          {matches ? 'Match generati' : 'Chiudi iscrizioni e genera i match'}
-          {!matches && <span aria-hidden="true">→</span>}
-        </button>
-      </div>
-      {participantsLoad.status === 'loaded' &&
-        participants.length < 2 &&
-        !isClosed && (
-        <p className="matching-hint">
-          {participants.length === 0
-            ? 'Potrai generare i match dopo le prime iscrizioni.'
-            : 'Con un solo partecipante non è possibile creare abbinamenti validi.'}
+          {closureMessage.text}
         </p>
       )}
-
-      {matches && <MatchResults matches={matches} />}
+      {matchingCompleted || matchGroups.length > 0 ? (
+        <div className="matching-results">
+          <div className="organizer-section-heading">
+            <div>
+              <div className="section-eyebrow">Gli incontri di oggi</div>
+              <h3>
+                {matchingCompleted
+                  ? 'Coffee Match generati'
+                  : 'Coffee Match già presenti'}
+              </h3>
+            </div>
+            {matchesLoad.status === 'loaded' && (
+              <span className="match-count">
+                {matchGroups.length} {matchGroups.length === 1 ? 'gruppo' : 'gruppi'}
+              </span>
+            )}
+          </div>
+          {matchesLoad.status === 'loading' ||
+          matchesLoad.status === 'idle' ? (
+            <div className="empty-state" role="status">
+              <strong>Caricamento Coffee Match…</strong>
+            </div>
+          ) : matchesLoad.status === 'error' ? (
+            <div className="empty-matches" role="alert">
+              Non è stato possibile caricare i Coffee Match.
+            </div>
+          ) : (
+            <div className="match-grid">
+              {matchGroups.map((group) => (
+                <article className="match-card" key={group.groupNumber}>
+                  <div className="match-card-top">
+                    <span className="match-number">
+                      {String(group.groupNumber).padStart(2, '0')}
+                    </span>
+                    <span className="match-coffee" aria-hidden="true">☕</span>
+                  </div>
+                  <div className="match-people">
+                    {group.participants.map((participant) => (
+                      <div className="match-person" key={participant.id}>
+                        <strong>{participant.firstName} {participant.lastName}</strong>
+                      </div>
+                    ))}
+                  </div>
+                  {group.participants.length === 3 && (
+                    <span className="group-note">Un tavolo da tre</span>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        eventStatus === 'loaded' &&
+        !isRegistrationOpen &&
+        !matchingCompleted && (
+          <div className="matching-panel">
+            <div className="matching-copy">
+              <span className="matching-icon" aria-hidden="true">✳</span>
+              <div>
+                <strong>Coffee Match</strong>
+                <p>
+                  {participantsLoad.status === 'loaded' &&
+                  participants.length < 2
+                    ? 'Servono almeno due partecipanti per generare i match.'
+                    : 'Le iscrizioni sono chiuse. È possibile preparare gli abbinamenti.'}
+                </p>
+              </div>
+            </div>
+            {canGenerateMatches &&
+              matchesLoad.status !== 'loaded' &&
+              matchGroups.length === 0 && (
+              <button
+                className="button button-primary"
+                disabled={isGeneratingMatches}
+                onClick={onGenerateMatches}
+                type="button"
+              >
+                {isGeneratingMatches
+                  ? 'Generazione in corso…'
+                  : 'Genera Coffee Match'}
+              </button>
+            )}
+          </div>
+        )
+      )}
+      {matchMessage && (
+        <p
+          className={`form-message ${matchMessage.type}`}
+          role={matchMessage.type === 'error' ? 'alert' : 'status'}
+        >
+          {matchMessage.text}
+        </p>
+      )}
     </main>
   )
 }
@@ -529,10 +638,22 @@ function App() {
     userId: null,
     status: 'idle',
   })
-  const [isClosed, setIsClosed] = useState(false)
-  const [matches, setMatches] = useState(null)
+  const [matchGroups, setMatchGroups] = useState([])
+  const [matchesLoad, setMatchesLoad] = useState({
+    userId: null,
+    status: 'idle',
+  })
+  const [isGeneratingMatches, setIsGeneratingMatches] = useState(false)
+  const [matchMessage, setMatchMessage] = useState(null)
   const [isOrganizerView, setIsOrganizerView] = useState(false)
   const [supabaseClient, setSupabaseClient] = useState(null)
+  const [eventState, setEventState] = useState({
+    status: 'loading',
+    registrationOpen: null,
+    matchingCompleted: null,
+  })
+  const [isClosingRegistrations, setIsClosingRegistrations] = useState(false)
+  const [closureMessage, setClosureMessage] = useState(null)
   const [authSession, setAuthSession] = useState(null)
   const [authReady, setAuthReady] = useState(false)
   const [authSetupError, setAuthSetupError] = useState(false)
@@ -545,7 +666,8 @@ function App() {
     type: 'loading',
     message: 'Verifica connessione...',
   })
-  const hasCheckedSupabase = useRef(false)
+  const isClosingRegistrationsRef = useRef(false)
+  const isGeneratingMatchesRef = useRef(false)
 
   useEffect(() => {
     let active = true
@@ -561,7 +683,12 @@ function App() {
           if (!active) return
           setAuthSession(session)
           setAuthReady(true)
-          if (!session) setOwnerCheck({ userId: null, status: 'idle' })
+          if (!session) {
+            setOwnerCheck({ userId: null, status: 'idle' })
+            setMatchGroups([])
+            setMatchesLoad({ userId: null, status: 'idle' })
+            setMatchMessage(null)
+          }
         })
         subscription = data.subscription
 
@@ -628,6 +755,9 @@ function App() {
       setOwnerCheck({ userId: authenticatedUserId, status: 'authorized' })
       setParticipants([])
       setParticipantsLoad({ userId: authenticatedUserId, status: 'loading' })
+      setMatchGroups([])
+      setMatchesLoad({ userId: authenticatedUserId, status: 'idle' })
+      setMatchMessage(null)
 
       try {
         const { data: participantRows, error: participantsError } =
@@ -699,19 +829,25 @@ function App() {
   }, [supabaseClient, authenticatedUserId])
 
   useEffect(() => {
-    if (hasCheckedSupabase.current) return
-    hasCheckedSupabase.current = true
+    if (!supabaseClient) return
+    let active = true
 
-    async function checkSupabaseConnection() {
+    async function loadEventState() {
       try {
-        const { supabase } = await import('./lib/supabase.js')
-        const { data, error } = await supabase
+        const { data, error } = await supabaseClient
           .from('events')
           .select('id, name, registration_open, matching_completed')
           .eq('id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
           .maybeSingle()
 
+        if (!active) return
+
         if (error) {
+          setEventState({
+            status: 'error',
+            registrationOpen: null,
+            matchingCompleted: null,
+          })
           setSupabaseDiagnostic({
             type: 'error',
             message:
@@ -721,6 +857,11 @@ function App() {
         }
 
         if (!data) {
+          setEventState({
+            status: 'error',
+            registrationOpen: null,
+            matchingCompleted: null,
+          })
           setSupabaseDiagnostic({
             type: 'error',
             message: 'Evento Coffee Match non trovato.',
@@ -728,13 +869,30 @@ function App() {
           return
         }
 
+        setEventState({
+          status: 'loaded',
+          registrationOpen: data.registration_open,
+          matchingCompleted: data.matching_completed,
+        })
         setSupabaseDiagnostic({
-          type: data.registration_open ? 'success' : 'error',
-          message: data.registration_open
+          type:
+            data.registration_open === true &&
+            data.matching_completed === false
+              ? 'success'
+              : 'error',
+          message:
+            data.registration_open === true &&
+            data.matching_completed === false
             ? 'Supabase connesso - Coffee Match - Iscrizioni aperte'
             : 'Connessione stabilita, ma le iscrizioni per Coffee Match sono chiuse.',
         })
       } catch {
+        if (!active) return
+        setEventState({
+          status: 'error',
+          registrationOpen: null,
+          matchingCompleted: null,
+        })
         setSupabaseDiagnostic({
           type: 'error',
           message:
@@ -743,24 +901,308 @@ function App() {
       }
     }
 
-    checkSupabaseConnection()
-  }, [])
+    loadEventState()
+
+    return () => {
+      active = false
+    }
+  }, [supabaseClient, isOrganizerView])
+
+  useEffect(() => {
+    if (
+      !supabaseClient ||
+      !authenticatedUserId ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId ||
+      eventState.status !== 'loaded' ||
+      eventState.matchingCompleted !== true ||
+      participantsLoad.userId !== authenticatedUserId ||
+      participantsLoad.status !== 'loaded' ||
+      isGeneratingMatchesRef.current ||
+      (matchesLoad.userId === authenticatedUserId &&
+        matchesLoad.status !== 'idle')
+    ) {
+      return
+    }
+
+    let active = true
+
+    async function loadPersistedMatches() {
+      try {
+        const { data, error } = await supabaseClient
+          .from('matches')
+          .select('id, group_number, participant_id, created_at')
+          .eq('event_id', eventId)
+          .order('group_number', { ascending: true })
+          .order('created_at', { ascending: true })
+
+        if (!active) return
+
+        if (error || !data || data.length === 0) {
+          setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+          setMatchMessage({
+            type: 'error',
+            text: 'Non è stato possibile caricare i Coffee Match.',
+          })
+          return
+        }
+
+        try {
+          setMatchGroups(groupPersistedMatches(data, participants))
+          setMatchesLoad({ userId: authenticatedUserId, status: 'loaded' })
+          setMatchMessage(null)
+        } catch {
+          setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+          setMatchMessage({
+            type: 'error',
+            text: 'Non è stato possibile caricare i Coffee Match.',
+          })
+        }
+      } catch {
+        if (!active) return
+        setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        setMatchMessage({
+          type: 'error',
+          text: 'Non è stato possibile caricare i Coffee Match.',
+        })
+      }
+    }
+
+    loadPersistedMatches()
+
+    return () => {
+      active = false
+    }
+  }, [
+    supabaseClient,
+    authenticatedUserId,
+    ownerStatus,
+    ownerCheck.userId,
+    eventState.status,
+    eventState.matchingCompleted,
+    participantsLoad.userId,
+    participantsLoad.status,
+    matchesLoad.userId,
+    matchesLoad.status,
+    participants,
+  ])
 
   function handleSignup(participant) {
     setParticipants((currentParticipants) => [...currentParticipants, participant])
   }
 
-  function handleCloseAndMatch() {
-    if (isClosed) return
-    setMatches(shuffleParticipants(participants))
-    setIsClosed(true)
+  async function handleCloseRegistrations() {
+    if (
+      isClosingRegistrationsRef.current ||
+      !supabaseClient ||
+      !authenticatedUserId ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId ||
+      eventState.status !== 'loaded' ||
+      eventState.registrationOpen !== true ||
+      eventState.matchingCompleted !== false
+    ) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      'Vuoi chiudere le iscrizioni? Dopo la chiusura non sarà possibile registrare nuovi partecipanti.',
+    )
+    if (!confirmed) return
+
+    isClosingRegistrationsRef.current = true
+    setIsClosingRegistrations(true)
+    setClosureMessage(null)
+
+    try {
+      const { data, error } = await supabaseClient
+        .from('events')
+        .update({ registration_open: false })
+        .eq('id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
+        .eq('owner_id', authenticatedUserId)
+        .select('id')
+        .maybeSingle()
+
+      if (error || !data) {
+        setClosureMessage({
+          type: 'error',
+          text: 'Non è stato possibile chiudere le iscrizioni.',
+        })
+        return
+      }
+
+      setEventState((current) => ({
+        ...current,
+        status: 'loaded',
+        registrationOpen: false,
+        matchingCompleted: false,
+      }))
+      setSupabaseDiagnostic({
+        type: 'error',
+        message: 'Connessione stabilita, ma le iscrizioni per Coffee Match sono chiuse.',
+      })
+      setClosureMessage({
+        type: 'success',
+        text: 'Iscrizioni chiuse.',
+      })
+    } catch {
+      setClosureMessage({
+        type: 'error',
+        text: 'Non è stato possibile chiudere le iscrizioni.',
+      })
+    } finally {
+      isClosingRegistrationsRef.current = false
+      setIsClosingRegistrations(false)
+    }
   }
 
-  function handleReset() {
-    setParticipants([])
-    setIsClosed(false)
-    setMatches(null)
-    setIsOrganizerView(false)
+  async function handleGenerateMatches() {
+    if (
+      isGeneratingMatchesRef.current ||
+      !supabaseClient ||
+      !authenticatedUserId ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId ||
+      eventState.status !== 'loaded' ||
+      eventState.registrationOpen !== false ||
+      eventState.matchingCompleted !== false ||
+      participantsLoad.userId !== authenticatedUserId ||
+      participantsLoad.status !== 'loaded' ||
+      participants.length < 2
+    ) {
+      return
+    }
+
+    isGeneratingMatchesRef.current = true
+    const confirmed = window.confirm(
+      'Vuoi generare i Coffee Match? Gli abbinamenti verranno salvati e non potranno essere rigenerati accidentalmente.',
+    )
+    if (!confirmed) {
+      isGeneratingMatchesRef.current = false
+      return
+    }
+
+    setIsGeneratingMatches(true)
+    setMatchMessage(null)
+    setMatchGroups([])
+    setMatchesLoad({ userId: authenticatedUserId, status: 'loading' })
+
+    try {
+      const { data: participantRows, error: participantsError } =
+        await supabaseClient
+          .from('participants')
+          .select('id, first_name, last_name')
+          .eq('event_id', eventId)
+
+      if (participantsError || !participantRows || participantRows.length < 2) {
+        setMatchMessage({
+          type: 'error',
+          text: 'Non è stato possibile generare i Coffee Match.',
+        })
+        setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        return
+      }
+
+      const matchingParticipants = participantRows.map((participant) => ({
+        id: participant.id,
+        firstName: participant.first_name,
+        lastName: participant.last_name,
+      }))
+
+      const { data: existingMatches, error: existingMatchesError } =
+        await supabaseClient
+          .from('matches')
+          .select('id, group_number, participant_id, created_at')
+          .eq('event_id', eventId)
+          .order('group_number', { ascending: true })
+          .order('created_at', { ascending: true })
+
+      if (existingMatchesError || !existingMatches) {
+        setMatchMessage({
+          type: 'error',
+          text: 'Non è stato possibile generare i Coffee Match.',
+        })
+        setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        return
+      }
+
+      if (existingMatches.length > 0) {
+        setMatchGroups(
+          groupPersistedMatches(existingMatches, matchingParticipants),
+        )
+        setMatchesLoad({ userId: authenticatedUserId, status: 'loaded' })
+        setMatchMessage({
+          type: 'info',
+          text: 'Esistono già Coffee Match per questo evento. Sono stati caricati senza rigenerarli.',
+        })
+        return
+      }
+
+      const matchRows = createMatchRows(matchingParticipants)
+      if (matchRows.length !== matchingParticipants.length) {
+        setMatchMessage({
+          type: 'error',
+          text: 'Non è stato possibile generare i Coffee Match.',
+        })
+        setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        return
+      }
+
+      const { error: rpcError } = await supabaseClient.rpc(
+        'save_coffee_matches',
+        {
+          p_event_id: eventId,
+          p_matches: matchRows,
+        },
+      )
+
+      if (rpcError) {
+        setMatchMessage({
+          type: 'error',
+          text: 'Non è stato possibile generare i Coffee Match.',
+        })
+        setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        return
+      }
+
+      setEventState((current) => ({
+        ...current,
+        matchingCompleted: true,
+      }))
+
+      const { data: savedMatches, error: savedMatchesError } =
+        await supabaseClient
+          .from('matches')
+          .select('id, group_number, participant_id, created_at')
+          .eq('event_id', eventId)
+          .order('group_number', { ascending: true })
+          .order('created_at', { ascending: true })
+
+      if (savedMatchesError || !savedMatches || savedMatches.length === 0) {
+        setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        setMatchMessage({
+          type: 'error',
+          text: 'Coffee Match generati, ma non è stato possibile caricarli.',
+        })
+        return
+      }
+
+      setMatchGroups(groupPersistedMatches(savedMatches, matchingParticipants))
+      setMatchesLoad({ userId: authenticatedUserId, status: 'loaded' })
+      setMatchMessage({
+        type: 'success',
+        text: 'Coffee Match generati e salvati.',
+      })
+    } catch {
+      setMatchMessage({
+        type: 'error',
+        text: 'Non è stato possibile generare i Coffee Match.',
+      })
+      setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+    } finally {
+      isGeneratingMatchesRef.current = false
+      setIsGeneratingMatches(false)
+    }
   }
 
   async function handleOrganizerLogin(credentials) {
@@ -790,10 +1232,50 @@ function App() {
       }
 
       setAuthNotice('')
+      setEventState((current) => ({ ...current, status: 'loading' }))
       setIsOrganizerView(false)
     } catch {
       setAuthNotice('Non è stato possibile completare il logout. Riprova.')
     }
+  }
+
+  const isRegistrationOpen =
+    eventState.status === 'loaded' &&
+    eventState.registrationOpen === true &&
+    eventState.matchingCompleted === false
+  const isEventClosed =
+    eventState.status === 'loaded' &&
+    (eventState.registrationOpen === false ||
+      eventState.matchingCompleted === true)
+  const currentMatchesLoad =
+    matchesLoad.userId === authenticatedUserId
+      ? matchesLoad
+      : { userId: authenticatedUserId, status: 'idle' }
+  const currentMatchGroups =
+    matchesLoad.userId === authenticatedUserId ? matchGroups : []
+  const canGenerateMatches =
+    Boolean(authSession) &&
+    ownerStatus === 'authorized' &&
+    ownerCheck.userId === authenticatedUserId &&
+    eventState.status === 'loaded' &&
+    eventState.registrationOpen === false &&
+    eventState.matchingCompleted === false &&
+    participantsLoad.userId === authenticatedUserId &&
+    participantsLoad.status === 'loaded' &&
+    participants.length >= 2 &&
+    currentMatchesLoad.status !== 'loaded'
+
+  function handleViewToggle() {
+    setEventState((current) => ({ ...current, status: 'loading' }))
+    setClosureMessage(null)
+    setIsOrganizerView((current) => !current)
+  }
+
+  function handleReturnToPublic(event) {
+    event.preventDefault()
+    setEventState((current) => ({ ...current, status: 'loading' }))
+    setClosureMessage(null)
+    setIsOrganizerView(false)
   }
 
   return (
@@ -803,20 +1285,20 @@ function App() {
           aria-label="Coffee Match, pagina principale"
           className="brand"
           href="#"
-          onClick={() => setIsOrganizerView(false)}
+          onClick={handleReturnToPublic}
         >
           <CoffeeMark />
           <span>coffee<span className="brand-accent">match</span></span>
         </a>
         <div className="header-right">
           <span className="event-label">
-            <span className={`status-dot ${isClosed ? 'dot-closed' : ''}`} />
-            {isClosed ? 'Evento concluso' : 'Evento in corso'}
+            <span className={`status-dot ${isEventClosed ? 'dot-closed' : ''}`} />
+            {isEventClosed ? 'Evento concluso' : 'Evento in corso'}
           </span>
           <button
             aria-pressed={isOrganizerView}
             className={`organizer-toggle ${isOrganizerView ? 'selected' : ''}`}
-            onClick={() => setIsOrganizerView((current) => !current)}
+            onClick={handleViewToggle}
             type="button"
           >
             {isOrganizerView ? 'Torna alla pagina' : 'Area organizzatore'}
@@ -840,11 +1322,19 @@ function App() {
           ownerStatus === 'authorized' &&
           ownerCheck.userId === authenticatedUserId ? (
             <OrganizerView
-              isClosed={isClosed}
-              matches={matches}
+              eventStatus={eventState.status}
+              isRegistrationOpen={isRegistrationOpen}
+              matchingCompleted={eventState.matchingCompleted === true}
               onLogout={handleLogout}
-              onCloseAndMatch={handleCloseAndMatch}
-              onReset={handleReset}
+              onCloseRegistrations={handleCloseRegistrations}
+              isClosingRegistrations={isClosingRegistrations}
+              closureMessage={closureMessage}
+              canGenerateMatches={canGenerateMatches}
+              isGeneratingMatches={isGeneratingMatches}
+              onGenerateMatches={handleGenerateMatches}
+              matchGroups={currentMatchGroups}
+              matchesLoad={currentMatchesLoad}
+              matchMessage={matchMessage}
               participants={participants}
               participantsLoad={
                 participantsLoad.userId === authenticatedUserId
@@ -966,7 +1456,9 @@ function App() {
           </section>
 
           <SignupForm
-            isClosed={isClosed}
+            isClosed={isEventClosed}
+            isEventReady={isRegistrationOpen}
+            isEventLoading={eventState.status === 'loading'}
             onSignup={handleSignup}
             participants={participants}
           />
