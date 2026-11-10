@@ -365,6 +365,10 @@ function OrganizerView({
   eventStatus,
   isRegistrationOpen,
   matchingCompleted,
+  onResetEvent,
+  isResettingEvent,
+  resetMessage,
+  resetVerificationMessage,
   onLogout,
   onCloseRegistrations,
   isClosingRegistrations,
@@ -396,18 +400,32 @@ function OrganizerView({
         <div className="organizer-header-actions">
           <button
             className="button button-quiet"
-            disabled
+            disabled={isResettingEvent}
+            onClick={onResetEvent}
             type="button"
-            title="La funzione sarà disponibile in seguito."
           >
             <span aria-hidden="true">↻</span>
-            Nuovo evento / Reset
+            {isResettingEvent ? 'Reset in corso...' : 'Nuovo evento / Reset'}
           </button>
           <button className="button button-quiet" onClick={onLogout} type="button">
             Esci
           </button>
         </div>
       </div>
+
+      {resetMessage && (
+        <p
+          className={`form-message ${resetMessage.type}`}
+          role={resetMessage.type === 'error' ? 'alert' : 'status'}
+        >
+          {resetMessage.text}
+        </p>
+      )}
+      {resetVerificationMessage && (
+        <p className="form-message error" role="alert">
+          {resetVerificationMessage}
+        </p>
+      )}
 
       <div className="organizer-stats">
         <article className="stat-card">
@@ -444,15 +462,15 @@ function OrganizerView({
               ? 'Verifica…'
               : matchingCompleted
                 ? 'Completato'
-                : 'In attesa'}
+                : 'Non generati'}
           </strong>
-          <span className="stat-caption">La generazione dei match sarà disponibile in seguito</span>
+          <span className="stat-caption">
+            {matchingCompleted
+              ? 'Gli abbinamenti sono stati salvati'
+              : 'Gli abbinamenti non sono ancora stati generati'}
+          </span>
         </article>
       </div>
-      <span className="reset-unavailable reset-description">
-        La funzione sarà disponibile in seguito.
-      </span>
-
       <section className="participants-section">
         <div className="organizer-section-heading">
           <div>
@@ -654,6 +672,9 @@ function App() {
   })
   const [isClosingRegistrations, setIsClosingRegistrations] = useState(false)
   const [closureMessage, setClosureMessage] = useState(null)
+  const [isResettingEvent, setIsResettingEvent] = useState(false)
+  const [resetMessage, setResetMessage] = useState(null)
+  const [resetVerificationMessage, setResetVerificationMessage] = useState('')
   const [authSession, setAuthSession] = useState(null)
   const [authReady, setAuthReady] = useState(false)
   const [authSetupError, setAuthSetupError] = useState(false)
@@ -668,6 +689,7 @@ function App() {
   })
   const isClosingRegistrationsRef = useRef(false)
   const isGeneratingMatchesRef = useRef(false)
+  const isResettingEventRef = useRef(false)
 
   useEffect(() => {
     let active = true
@@ -989,6 +1011,170 @@ function App() {
 
   function handleSignup(participant) {
     setParticipants((currentParticipants) => [...currentParticipants, participant])
+  }
+
+  async function handleResetEvent() {
+    if (
+      isResettingEventRef.current ||
+      !supabaseClient ||
+      !authSession ||
+      !authenticatedUserId ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId
+    ) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      'ATTENZIONE: questa operazione cancellerà definitivamente tutti i partecipanti e tutti i Coffee Match dell’evento corrente. L’evento tornerà ad accettare nuove iscrizioni. Vuoi continuare?',
+    )
+    if (!confirmed) return
+
+    isResettingEventRef.current = true
+    setIsResettingEvent(true)
+    setResetMessage(null)
+    setResetVerificationMessage('')
+
+    try {
+      const { error } = await supabaseClient.rpc('reset_coffee_event', {
+        p_event_id: eventId,
+      })
+
+      if (error) {
+        setResetMessage({
+          type: 'error',
+          text: 'Non è stato possibile resettare l’evento.',
+        })
+        return
+      }
+
+      setParticipants([])
+      setParticipantsLoad({ userId: authenticatedUserId, status: 'loading' })
+      setMatchGroups([])
+      setMatchesLoad({ userId: authenticatedUserId, status: 'loading' })
+      setMatchMessage(null)
+      setClosureMessage(null)
+      setEventState({
+        status: 'loaded',
+        registrationOpen: true,
+        matchingCompleted: false,
+      })
+      setResetMessage({
+        type: 'success',
+        text: 'Evento resettato. Le iscrizioni sono nuovamente aperte.',
+      })
+
+      try {
+        const [eventResult, participantsResult, matchesResult] =
+          await Promise.all([
+            supabaseClient
+              .from('events')
+              .select('registration_open, matching_completed')
+              .eq('id', eventId)
+              .maybeSingle(),
+            supabaseClient
+              .from('participants')
+              .select('id, first_name, last_name, email, created_at')
+              .eq('event_id', eventId)
+              .order('created_at', { ascending: true }),
+            supabaseClient
+              .from('matches')
+              .select('id, group_number, participant_id, created_at')
+              .eq('event_id', eventId)
+              .order('group_number', { ascending: true })
+              .order('created_at', { ascending: true }),
+          ])
+
+        let verificationFailed = false
+
+        if (eventResult.error || !eventResult.data) {
+          setEventState({
+            status: 'error',
+            registrationOpen: null,
+            matchingCompleted: null,
+          })
+          verificationFailed = true
+        } else {
+          setEventState({
+            status: 'loaded',
+            registrationOpen: eventResult.data.registration_open,
+            matchingCompleted: eventResult.data.matching_completed,
+          })
+        }
+
+        if (participantsResult.error || !participantsResult.data) {
+          setParticipantsLoad({
+            userId: authenticatedUserId,
+            status: 'error',
+          })
+          verificationFailed = true
+        } else {
+          const refreshedParticipants = participantsResult.data.map(
+            (participant) => ({
+              id: participant.id,
+              firstName: participant.first_name,
+              lastName: participant.last_name,
+              email: participant.email,
+              createdAt: participant.created_at,
+            }),
+          )
+          setParticipants(refreshedParticipants)
+          setParticipantsLoad({ userId: authenticatedUserId, status: 'loaded' })
+
+          if (matchesResult.error || !matchesResult.data) {
+            setMatchGroups([])
+            setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+            verificationFailed = true
+          } else {
+            try {
+              setMatchGroups(
+                groupPersistedMatches(
+                  matchesResult.data,
+                  refreshedParticipants,
+                ),
+              )
+              setMatchesLoad({ userId: authenticatedUserId, status: 'loaded' })
+            } catch {
+              setMatchGroups([])
+              setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+              verificationFailed = true
+            }
+          }
+        }
+
+        if (participantsResult.error || !participantsResult.data) {
+          setMatchGroups([])
+          setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        }
+
+        if (verificationFailed) {
+          setResetVerificationMessage(
+            'Reset completato, ma non è stato possibile verificare tutti i dati aggiornati.',
+          )
+        }
+      } catch {
+        setEventState({
+          status: 'error',
+          registrationOpen: null,
+          matchingCompleted: null,
+        })
+        setParticipantsLoad({ userId: authenticatedUserId, status: 'error' })
+        setParticipants([])
+        setMatchGroups([])
+        setMatchesLoad({ userId: authenticatedUserId, status: 'error' })
+        setResetVerificationMessage(
+          'Reset completato, ma non è stato possibile verificare tutti i dati aggiornati.',
+        )
+      }
+    } catch {
+      setResetMessage({
+        type: 'error',
+        text: 'Non è stato possibile resettare l’evento.',
+      })
+    } finally {
+      isResettingEventRef.current = false
+      setIsResettingEvent(false)
+    }
   }
 
   async function handleCloseRegistrations() {
@@ -1325,6 +1511,10 @@ function App() {
               eventStatus={eventState.status}
               isRegistrationOpen={isRegistrationOpen}
               matchingCompleted={eventState.matchingCompleted === true}
+              onResetEvent={handleResetEvent}
+              isResettingEvent={isResettingEvent}
+              resetMessage={resetMessage}
+              resetVerificationMessage={resetVerificationMessage}
               onLogout={handleLogout}
               onCloseRegistrations={handleCloseRegistrations}
               isClosingRegistrations={isClosingRegistrations}
