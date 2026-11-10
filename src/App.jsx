@@ -232,6 +232,84 @@ function SignupForm({ isClosed, participants, onSignup }) {
   )
 }
 
+function OrganizerLogin({ message, onLogin, onClearMessage }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    if (isSubmitting) return
+
+    setIsSubmitting(true)
+    await onLogin({ email: email.trim(), password })
+    setIsSubmitting(false)
+  }
+
+  return (
+    <main className="organizer-page auth-page">
+      <section className="signup-card auth-card">
+        <div className="section-eyebrow">Accesso riservato</div>
+        <h1>Area organizzatore</h1>
+        <p className="card-intro">
+          Accedi con l&apos;account organizzatore per gestire questo evento.
+        </p>
+        <form className="signup-form" onSubmit={handleSubmit}>
+          <label className="field">
+            <span>Email</span>
+            <input
+              autoComplete="username"
+              onChange={(event) => {
+                setEmail(event.target.value)
+                onClearMessage()
+              }}
+              required
+              type="email"
+              value={email}
+            />
+          </label>
+          <label className="field">
+            <span>Password</span>
+            <input
+              autoComplete="current-password"
+              onChange={(event) => {
+                setPassword(event.target.value)
+                onClearMessage()
+              }}
+              required
+              type="password"
+              value={password}
+            />
+          </label>
+          {message && (
+            <p className="form-message error" role="alert">
+              {message}
+            </p>
+          )}
+          <button
+            className="button button-primary signup-button"
+            disabled={isSubmitting}
+            type="submit"
+          >
+            {isSubmitting ? 'Accesso in corso...' : 'Accedi'}
+          </button>
+        </form>
+      </section>
+    </main>
+  )
+}
+
+function OrganizerAccessStatus({ message }) {
+  return (
+    <main className="organizer-page auth-page">
+      <section className="signup-card auth-card" role="status">
+        <div className="section-eyebrow">Area organizzatore</div>
+        <p className="auth-status-message">{message}</p>
+      </section>
+    </main>
+  )
+}
+
 function MatchResults({ matches }) {
   if (matches.length === 0) {
     return (
@@ -288,10 +366,19 @@ function MatchResults({ matches }) {
 function OrganizerView({
   isClosed,
   matches,
+  onLogout,
   onCloseAndMatch,
   onReset,
   participants,
+  participantsLoad,
 }) {
+  const participantsCount =
+    participantsLoad.status === 'loaded'
+      ? participants.length
+      : participantsLoad.status === 'loading'
+        ? '…'
+        : '—'
+
   function handleReset() {
     const confirmed = window.confirm(
       'Vuoi iniziare un nuovo evento? Tutti gli iscritti e i match attuali verranno cancellati.',
@@ -308,16 +395,21 @@ function OrganizerView({
           <h1>Area organizzatore</h1>
           <p>Gestisci le iscrizioni e prepara gli incontri dell&apos;evento.</p>
         </div>
-        <button className="button button-quiet" onClick={handleReset} type="button">
-          <span aria-hidden="true">↻</span>
-          Nuovo evento / Reset
-        </button>
+        <div className="organizer-header-actions">
+          <button className="button button-quiet" onClick={handleReset} type="button">
+            <span aria-hidden="true">↻</span>
+            Nuovo evento / Reset
+          </button>
+          <button className="button button-quiet" onClick={onLogout} type="button">
+            Esci
+          </button>
+        </div>
       </div>
 
       <div className="organizer-stats">
         <article className="stat-card">
           <span className="stat-label">Partecipanti iscritti</span>
-          <strong className="stat-number">{participants.length}</strong>
+          <strong className="stat-number">{participantsCount}</strong>
           <span className="stat-caption">per questo evento</span>
         </article>
         <article className="stat-card status-stat">
@@ -345,9 +437,23 @@ function OrganizerView({
             <div className="section-eyebrow">La community</div>
             <h3>Partecipanti</h3>
           </div>
-          <span className="participant-count">{participants.length} iscritti</span>
+          <span className="participant-count">
+            {participantsLoad.status === 'loaded'
+              ? `${participants.length} iscritti`
+              : participantsLoad.status === 'loading'
+                ? 'Caricamento…'
+                : 'Non disponibile'}
+          </span>
         </div>
-        {participants.length === 0 ? (
+        {participantsLoad.status === 'loading' ? (
+          <div className="empty-state" role="status">
+            <strong>Caricamento partecipanti…</strong>
+          </div>
+        ) : participantsLoad.status === 'error' ? (
+          <div className="empty-matches" role="alert">
+            Non è stato possibile caricare i partecipanti.
+          </div>
+        ) : participants.length === 0 ? (
           <div className="empty-state">
             <span className="empty-cup" aria-hidden="true">☕</span>
             <strong>La lista è ancora vuota</strong>
@@ -390,7 +496,11 @@ function OrganizerView({
         </div>
         <button
           className="button button-primary"
-          disabled={isClosed}
+          disabled={
+            isClosed ||
+            participantsLoad.status !== 'loaded' ||
+            participants.length < 2
+          }
           onClick={onCloseAndMatch}
           type="button"
         >
@@ -398,7 +508,9 @@ function OrganizerView({
           {!matches && <span aria-hidden="true">→</span>}
         </button>
       </div>
-      {participants.length < 2 && !isClosed && (
+      {participantsLoad.status === 'loaded' &&
+        participants.length < 2 &&
+        !isClosed && (
         <p className="matching-hint">
           {participants.length === 0
             ? 'Potrai generare i match dopo le prime iscrizioni.'
@@ -413,14 +525,178 @@ function OrganizerView({
 
 function App() {
   const [participants, setParticipants] = useState([])
+  const [participantsLoad, setParticipantsLoad] = useState({
+    userId: null,
+    status: 'idle',
+  })
   const [isClosed, setIsClosed] = useState(false)
   const [matches, setMatches] = useState(null)
   const [isOrganizerView, setIsOrganizerView] = useState(false)
+  const [supabaseClient, setSupabaseClient] = useState(null)
+  const [authSession, setAuthSession] = useState(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [authSetupError, setAuthSetupError] = useState(false)
+  const [ownerCheck, setOwnerCheck] = useState({
+    userId: null,
+    status: 'idle',
+  })
+  const [authNotice, setAuthNotice] = useState('')
   const [supabaseDiagnostic, setSupabaseDiagnostic] = useState({
     type: 'loading',
     message: 'Verifica connessione...',
   })
   const hasCheckedSupabase = useRef(false)
+
+  useEffect(() => {
+    let active = true
+    let subscription
+
+    async function initializeAuth() {
+      try {
+        const { supabase } = await import('./lib/supabase.js')
+        if (!active) return
+
+        setSupabaseClient(supabase)
+        const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+          if (!active) return
+          setAuthSession(session)
+          setAuthReady(true)
+          if (!session) setOwnerCheck({ userId: null, status: 'idle' })
+        })
+        subscription = data.subscription
+
+        const { data: sessionData, error } = await supabase.auth.getSession()
+        if (!active) return
+
+        if (error) {
+          setAuthSetupError(true)
+          setAuthReady(true)
+          return
+        }
+
+        setAuthSession(sessionData.session)
+        setAuthReady(true)
+      } catch {
+        if (!active) return
+        setAuthSetupError(true)
+        setAuthReady(true)
+      }
+    }
+
+    initializeAuth()
+
+    return () => {
+      active = false
+      subscription?.unsubscribe()
+    }
+  }, [])
+
+  const authenticatedUserId = authSession?.user?.id
+  const ownerStatus = authenticatedUserId
+    ? ownerCheck.userId === authenticatedUserId
+      ? ownerCheck.status
+      : 'checking'
+    : 'idle'
+
+  useEffect(() => {
+    if (!supabaseClient || !authenticatedUserId) return
+
+    let active = true
+
+    async function verifyEventOwner() {
+      const { data, error } = await supabaseClient
+        .from('events')
+        .select('owner_id')
+        .eq('id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
+        .maybeSingle()
+
+      if (!active) return
+
+      if (error || !data) {
+        await denyEventAccess(
+          'Non è stato possibile verificare l’autorizzazione per questo evento.',
+        )
+        return
+      }
+
+      if (data.owner_id !== authenticatedUserId) {
+        await denyEventAccess('Non sei autorizzato a gestire questo evento.')
+        return
+      }
+
+      setAuthNotice('')
+      setOwnerCheck({ userId: authenticatedUserId, status: 'authorized' })
+      setParticipants([])
+      setParticipantsLoad({ userId: authenticatedUserId, status: 'loading' })
+
+      try {
+        const { data: participantRows, error: participantsError } =
+          await supabaseClient
+            .from('participants')
+            .select('id, first_name, last_name, email, created_at')
+            .eq('event_id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
+            .order('created_at', { ascending: true })
+
+        if (!active) return
+
+        if (participantsError) {
+          setParticipantsLoad({
+            userId: authenticatedUserId,
+            status: 'error',
+          })
+          return
+        }
+
+        setParticipants(
+          participantRows.map((participant) => ({
+            id: participant.id,
+            firstName: participant.first_name,
+            lastName: participant.last_name,
+            email: participant.email,
+            createdAt: participant.created_at,
+          })),
+        )
+        setParticipantsLoad({ userId: authenticatedUserId, status: 'loaded' })
+      } catch {
+        if (!active) return
+        setParticipantsLoad({
+          userId: authenticatedUserId,
+          status: 'error',
+        })
+      }
+    }
+
+    async function denyEventAccess(message) {
+      if (!active) return
+      setOwnerCheck({ userId: authenticatedUserId, status: 'denied' })
+      setAuthNotice(message)
+
+      try {
+        const { error } = await supabaseClient.auth.signOut()
+        if (error && active) {
+          setAuthNotice(
+            `${message} La sessione non è stata terminata; riprova a uscire.`,
+          )
+        }
+      } catch {
+        if (active) {
+          setAuthNotice(
+            `${message} La sessione non è stata terminata; riprova a uscire.`,
+          )
+        }
+      }
+    }
+
+    verifyEventOwner().catch(() => {
+      denyEventAccess(
+        'Non è stato possibile verificare l’autorizzazione per questo evento.',
+      )
+    })
+
+    return () => {
+      active = false
+    }
+  }, [supabaseClient, authenticatedUserId])
 
   useEffect(() => {
     if (hasCheckedSupabase.current) return
@@ -487,6 +763,39 @@ function App() {
     setIsOrganizerView(false)
   }
 
+  async function handleOrganizerLogin(credentials) {
+    if (!supabaseClient || authSetupError) {
+      setAuthNotice('Accesso non disponibile al momento. Riprova più tardi.')
+      return
+    }
+
+    setAuthNotice('')
+    try {
+      const { error } =
+        await supabaseClient.auth.signInWithPassword(credentials)
+      if (error) setAuthNotice('Email o password non corretti.')
+    } catch {
+      setAuthNotice('Email o password non corretti.')
+    }
+  }
+
+  async function handleLogout() {
+    if (!supabaseClient) return
+
+    try {
+      const { error } = await supabaseClient.auth.signOut()
+      if (error) {
+        setAuthNotice('Non è stato possibile completare il logout. Riprova.')
+        return
+      }
+
+      setAuthNotice('')
+      setIsOrganizerView(false)
+    } catch {
+      setAuthNotice('Non è stato possibile completare il logout. Riprova.')
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -525,13 +834,45 @@ function App() {
       </aside>
 
       {isOrganizerView ? (
-        <OrganizerView
-          isClosed={isClosed}
-          matches={matches}
-          onCloseAndMatch={handleCloseAndMatch}
-          onReset={handleReset}
-          participants={participants}
-        />
+        !authReady ? (
+          <OrganizerAccessStatus message="Verifica della sessione in corso..." />
+        ) : authSession ? (
+          ownerStatus === 'authorized' &&
+          ownerCheck.userId === authenticatedUserId ? (
+            <OrganizerView
+              isClosed={isClosed}
+              matches={matches}
+              onLogout={handleLogout}
+              onCloseAndMatch={handleCloseAndMatch}
+              onReset={handleReset}
+              participants={participants}
+              participantsLoad={
+                participantsLoad.userId === authenticatedUserId
+                  ? participantsLoad
+                  : { userId: authenticatedUserId, status: 'loading' }
+              }
+            />
+          ) : (
+            <OrganizerAccessStatus
+              message={
+                ownerStatus === 'checking'
+                  ? 'Verifica dell’autorizzazione in corso...'
+                  : authNotice || 'Verifica dell’autorizzazione non riuscita.'
+              }
+            />
+          )
+        ) : (
+          <OrganizerLogin
+            message={
+              authNotice ||
+              (authSetupError
+                ? 'Accesso non disponibile al momento. Riprova più tardi.'
+                : '')
+            }
+            onClearMessage={() => setAuthNotice('')}
+            onLogin={handleOrganizerLogin}
+          />
+        )
       ) : (
         <main className="public-page">
           <section className="hero-section">

@@ -753,6 +753,38 @@
   margin-bottom: 30px;
 }
 
+.organizer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.auth-card {
+  max-width: 470px;
+  margin: 32px auto 0;
+  padding: 34px 38px;
+}
+
+.auth-card h1 {
+  margin: 9px 0 0;
+  color: var(--coffee-dark);
+  font-family: var(--heading);
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: -0.06em;
+}
+
+.auth-card .signup-form {
+  margin-top: 21px;
+}
+
+.auth-status-message {
+  margin-top: 12px;
+  color: #695b4f;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .organizer-header h1 {
   margin: 8px 0 5px;
   color: var(--coffee-dark);
@@ -1359,6 +1391,15 @@
     flex-direction: column;
     gap: 16px;
     margin-bottom: 22px;
+  }
+
+  .organizer-header-actions {
+    flex-wrap: wrap;
+  }
+
+  .auth-card {
+    margin-top: 12px;
+    padding: 25px 19px;
   }
 
   .organizer-header h1 {
