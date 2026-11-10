@@ -198,6 +198,15 @@
   background: #b88965;
 }
 
+.public-event-title {
+  margin: 16px 0 -18px;
+  color: var(--coffee-mid);
+  font-family: var(--heading);
+  font-size: 19px;
+  font-weight: 550;
+  letter-spacing: -0.03em;
+}
+
 .hero-copy h1 {
   margin: 22px 0 18px;
   color: var(--coffee-dark);
@@ -785,6 +794,28 @@
   line-height: 1.7;
 }
 
+.confirmation-card .button {
+  margin-top: 22px;
+}
+
+.event-title-section {
+  margin-bottom: 35px;
+  padding: 21px;
+  border: 1px solid var(--line);
+  background: #fffefa;
+}
+
+.event-title-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 14px;
+}
+
+.event-title-section > .form-message {
+  margin-top: 12px;
+}
+
 .organizer-header h1 {
   margin: 8px 0 5px;
   color: var(--coffee-dark);
@@ -975,6 +1006,14 @@
 .participant-status .status-dot {
   width: 6px;
   height: 6px;
+}
+
+.participant-status.pending {
+  color: #94704f;
+}
+
+.participant-status.pending .status-dot {
+  background: #b28a5d;
 }
 
 .empty-state {
@@ -1407,6 +1446,14 @@
 
   .organizer-header-actions {
     flex-wrap: wrap;
+  }
+
+  .event-title-form {
+    grid-template-columns: 1fr;
+  }
+
+  .event-title-form .button {
+    width: 100%;
   }
 
   .auth-card {

@@ -4,6 +4,26 @@ import './App.css'
 const initialForm = { firstName: '', lastName: '', email: '' }
 const eventId = '46869c0f-21ae-4d70-9865-5f72d87c1153'
 
+async function getFunctionStatus(data, error) {
+  let response = data
+
+  if (!response && error?.context?.clone) {
+    try {
+      response = await error.context.clone().json()
+    } catch {
+      response = null
+    }
+  }
+
+  for (const candidate of [response, response?.data, response?.error]) {
+    if (typeof candidate === 'string') return candidate
+    const status = candidate?.status ?? candidate?.code ?? candidate?.result
+    if (typeof status === 'string') return status
+  }
+
+  return null
+}
+
 function createMatchRows(participants) {
   const shuffled = [...participants]
 
@@ -79,12 +99,11 @@ function SignupForm({
   isClosed,
   isEventReady,
   isEventLoading,
-  participants,
-  onSignup,
 }) {
   const [form, setForm] = useState(initialForm)
   const [message, setMessage] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const isSubmittingRef = useRef(false)
 
   function handleChange(event) {
     const { name, value } = event.target
@@ -95,94 +114,62 @@ function SignupForm({
   async function handleSubmit(event) {
     event.preventDefault()
 
-    if (isClosed || !isEventReady || isSubmitting) return
+    if (isClosed || !isEventReady || isSubmittingRef.current) return
 
-    const normalizedEmail = form.email.trim().toLowerCase()
-    const emailExists = participants.some(
-      (participant) => participant.email.toLowerCase() === normalizedEmail,
-    )
-
-    if (emailExists) {
-      setMessage({
-        type: 'error',
-        text: 'Questo indirizzo email è già iscritto al Coffee Match.',
-      })
-      return
-    }
-
+    isSubmittingRef.current = true
     setIsSubmitting(true)
 
     try {
       const { supabase } = await import('./lib/supabase.js')
-      const { data: eventData, error: eventError } = await supabase
-        .from('events')
-        .select('registration_open, matching_completed')
-        .eq('id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
-        .maybeSingle()
+      const { data, error } = await supabase.functions.invoke(
+        'request-registration',
+        {
+          body: {
+            event_id: eventId,
+            first_name: form.firstName.trim(),
+            last_name: form.lastName.trim(),
+            email: form.email.trim().toLowerCase(),
+          },
+        },
+      )
+      const responseStatus = await getFunctionStatus(data, error)
 
-      if (eventError) {
+      const responseMessages = {
+        CONFIRMATION_SENT: {
+          type: 'success',
+          text: 'Controlla la tua email. Per completare l’iscrizione devi confermare il tuo indirizzo.',
+        },
+        CONFIRMATION_RESENT: {
+          type: 'success',
+          text: 'La richiesta era già presente. Ti abbiamo inviato nuovamente l’email di conferma.',
+        },
+        ALREADY_CONFIRMED: {
+          type: 'success',
+          text: 'Questa email risulta già iscritta e confermata.',
+        },
+        REGISTRATION_CLOSED: {
+          type: 'error',
+          text: 'Le iscrizioni sono chiuse.',
+        },
+      }
+      const responseMessage = responseMessages[responseStatus]
+
+      if (responseMessage) {
+        if (responseStatus !== 'REGISTRATION_CLOSED') setForm(initialForm)
+        setMessage(responseMessage)
+      } else {
         setMessage({
           type: 'error',
-          text: 'Non è stato possibile verificare lo stato delle iscrizioni. Riprova.',
+          text: 'Non è stato possibile inviare l’email di conferma. Riprova.',
         })
-        return
       }
-
-      if (!eventData) {
-        setMessage({
-          type: 'error',
-          text: 'L’evento Coffee Match non è disponibile per le iscrizioni.',
-        })
-        return
-      }
-
-      if (
-        eventData.registration_open !== true ||
-        eventData.matching_completed !== false
-      ) {
-        setMessage({
-          type: 'error',
-          text: 'Le iscrizioni a questo evento sono chiuse.',
-        })
-        return
-      }
-
-      const { error: insertError } = await supabase
-        .from('participants')
-        .insert({
-          event_id: '46869c0f-21ae-4d70-9865-5f72d87c1153',
-          first_name: form.firstName.trim(),
-          last_name: form.lastName.trim(),
-          email: form.email.trim(),
-        })
-
-      if (insertError) {
-        setMessage({
-          type: 'error',
-          text:
-            insertError.code === '23505'
-              ? 'Questa email risulta già iscritta al Coffee Match.'
-              : 'Non è stato possibile completare l’iscrizione. Riprova.',
-        })
-        return
-      }
-
-      onSignup({
-        firstName: form.firstName.trim(),
-        lastName: form.lastName.trim(),
-        email: normalizedEmail,
-      })
-      setForm(initialForm)
-      setMessage({
-        type: 'success',
-        text: 'Iscrizione completata! Ci vediamo al Coffee Match.',
-      })
     } catch {
       setMessage({
         type: 'error',
-        text: 'Non è stato possibile collegarsi per completare l’iscrizione. Riprova.',
+        text: 'Non è stato possibile inviare l’email di conferma. Riprova.',
       })
     } finally {
+      isSubmittingRef.current = false
       setIsSubmitting(false)
     }
   }
@@ -252,7 +239,10 @@ function SignupForm({
             />
           </label>
           {message && (
-            <p className={`form-message ${message.type}`} role="status">
+            <p
+              className={`form-message ${message.type}`}
+              role={message.type === 'error' ? 'alert' : 'status'}
+            >
               {message.text}
             </p>
           )}
@@ -262,7 +252,7 @@ function SignupForm({
             type="submit"
           >
             {isSubmitting
-              ? 'Iscrizione in corso...'
+              ? 'Invio conferma...'
               : isEventLoading
                 ? 'Verifica iscrizioni...'
                 : 'Iscriviti al Coffee Match'}
@@ -361,10 +351,126 @@ function OrganizerAccessStatus({ message }) {
   )
 }
 
+function ConfirmationView({ eventName, status, message, onReturn }) {
+  const confirmationMessages = {
+    REGISTRATION_CONFIRMED: `Iscrizione confermata! Ora partecipi al Coffee Match di ${eventName}.`,
+    ALREADY_CONFIRMED: 'La tua iscrizione era già stata confermata.',
+    REGISTRATION_CLOSED:
+      'Non è più possibile confermare l’iscrizione perché le iscrizioni sono chiuse.',
+    INVALID_OR_EXPIRED_TOKEN:
+      'Il link di conferma non è valido oppure è già stato utilizzato.',
+    INVALID_CONFIRMATION_TOKEN:
+      'Il link di conferma non è valido oppure è già stato utilizzato.',
+    ERROR: 'Non è stato possibile confermare l’iscrizione.',
+  }
+
+  return (
+    <main className="organizer-page auth-page">
+      <section className="signup-card auth-card confirmation-card">
+        <div className="section-eyebrow">Conferma iscrizione</div>
+        <h1>{eventName}</h1>
+        <p className="auth-status-message" role="status">
+          {status === 'loading'
+            ? 'Conferma in corso...'
+            : confirmationMessages[status] || message}
+        </p>
+        {status !== 'loading' && (
+          <button
+            className="button button-primary signup-button"
+            onClick={onReturn}
+            type="button"
+          >
+            Torna a Coffee Match
+          </button>
+        )}
+      </section>
+    </main>
+  )
+}
+
+function EventTitleEditor({
+  eventName,
+  isEventLoaded,
+  isSaving,
+  message,
+  onSave,
+}) {
+  const [title, setTitle] = useState(eventName)
+  const [validationMessage, setValidationMessage] = useState('')
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    if (!isEventLoaded || isSaving) return
+
+    const normalizedTitle = title.trim()
+    if (!normalizedTitle) {
+      setValidationMessage('Il titolo dell’evento è obbligatorio.')
+      return
+    }
+    if (normalizedTitle.length < 3 || normalizedTitle.length > 120) {
+      setValidationMessage('Il titolo deve contenere da 3 a 120 caratteri.')
+      return
+    }
+
+    setValidationMessage('')
+    await onSave(normalizedTitle)
+  }
+
+  return (
+    <section className="event-title-section">
+      <div className="organizer-section-heading">
+        <div>
+          <div className="section-eyebrow">Personalizzazione</div>
+          <h3>Titolo evento</h3>
+        </div>
+      </div>
+      <form className="event-title-form" onSubmit={handleSubmit}>
+        <label className="field">
+          <span>Nome visibile ai partecipanti</span>
+          <input
+            disabled={!isEventLoaded || isSaving}
+            maxLength={120}
+            onChange={(event) => {
+              setTitle(event.target.value)
+              setValidationMessage('')
+            }}
+            required
+            value={title}
+          />
+        </label>
+        <button
+          className="button button-primary"
+          disabled={!isEventLoaded || isSaving}
+          type="submit"
+        >
+          {isSaving ? 'Salvataggio...' : 'Salva titolo'}
+        </button>
+      </form>
+      {validationMessage && (
+        <p className="form-message error" role="alert">
+          {validationMessage}
+        </p>
+      )}
+      {message && (
+        <p
+          className={`form-message ${message.type}`}
+          role={message.type === 'error' ? 'alert' : 'status'}
+        >
+          {message.text}
+        </p>
+      )}
+    </section>
+  )
+}
+
 function OrganizerView({
+  eventName,
   eventStatus,
   isRegistrationOpen,
   matchingCompleted,
+  onSaveEventTitle,
+  isSavingEventTitle,
+  eventTitleMessage,
   onResetEvent,
   isResettingEvent,
   resetMessage,
@@ -382,9 +488,21 @@ function OrganizerView({
   participants,
   participantsLoad,
 }) {
-  const participantsCount =
+  const confirmedParticipants = participants.filter(
+    (participant) => participant.confirmedAt,
+  )
+  const pendingParticipants = participants.filter(
+    (participant) => !participant.confirmedAt,
+  )
+  const confirmedCount =
     participantsLoad.status === 'loaded'
-      ? participants.length
+      ? confirmedParticipants.length
+      : participantsLoad.status === 'loading'
+        ? '…'
+        : '—'
+  const pendingCount =
+    participantsLoad.status === 'loaded'
+      ? pendingParticipants.length
       : participantsLoad.status === 'loading'
         ? '…'
         : '—'
@@ -395,7 +513,7 @@ function OrganizerView({
         <div>
           <div className="section-eyebrow">Dietro le quinte</div>
           <h1>Area organizzatore</h1>
-          <p>Gestisci le iscrizioni e prepara gli incontri dell&apos;evento.</p>
+          <p>{eventName}</p>
         </div>
         <div className="organizer-header-actions">
           <button
@@ -429,9 +547,16 @@ function OrganizerView({
 
       <div className="organizer-stats">
         <article className="stat-card">
-          <span className="stat-label">Partecipanti iscritti</span>
-          <strong className="stat-number">{participantsCount}</strong>
-          <span className="stat-caption">per questo evento</span>
+          <span className="stat-label">Iscritti confermati</span>
+          <strong className="stat-number">{confirmedCount}</strong>
+          <span className="stat-caption">partecipanti effettivi</span>
+        </article>
+        <article className="stat-card">
+          <span className="stat-label">In attesa di conferma</span>
+          <strong className="stat-number">{pendingCount}</strong>
+          <span className="stat-caption">
+            richieste non ancora confermate
+          </span>
         </article>
         <article className="stat-card status-stat">
           <span className="stat-label">Stato iscrizioni</span>
@@ -455,22 +580,16 @@ function OrganizerView({
                   : 'Non è possibile aggiungere partecipanti'}
           </span>
         </article>
-        <article className="stat-card">
-          <span className="stat-label">Stato Coffee Match</span>
-          <strong className="stat-number stat-number-label">
-            {eventStatus !== 'loaded'
-              ? 'Verifica…'
-              : matchingCompleted
-                ? 'Completato'
-                : 'Non generati'}
-          </strong>
-          <span className="stat-caption">
-            {matchingCompleted
-              ? 'Gli abbinamenti sono stati salvati'
-              : 'Gli abbinamenti non sono ancora stati generati'}
-          </span>
-        </article>
       </div>
+      <EventTitleEditor
+        key={eventName}
+        eventName={eventName}
+        isEventLoaded={eventStatus === 'loaded'}
+        isSaving={isSavingEventTitle}
+        message={eventTitleMessage}
+        onSave={onSaveEventTitle}
+      />
+
       <section className="participants-section">
         <div className="organizer-section-heading">
           <div>
@@ -479,7 +598,7 @@ function OrganizerView({
           </div>
           <span className="participant-count">
             {participantsLoad.status === 'loaded'
-              ? `${participants.length} iscritti`
+              ? `${confirmedParticipants.length} confermati · ${pendingParticipants.length} in attesa`
               : participantsLoad.status === 'loading'
                 ? 'Caricamento…'
                 : 'Non disponibile'}
@@ -514,9 +633,9 @@ function OrganizerView({
                 </span>
                 <span className="participant-email">{participant.email}</span>
                 <span>
-                  <span className="participant-status">
+                  <span className={`participant-status ${participant.confirmedAt ? 'confirmed' : 'pending'}`}>
                     <span className="status-dot" />
-                    Iscritto
+                    {participant.confirmedAt ? 'Confermato' : 'In attesa'}
                   </span>
                 </span>
                 <span className="sr-only">Partecipante {index + 1}</span>
@@ -533,6 +652,10 @@ function OrganizerView({
             <div>
               <strong>Pronto a chiudere le iscrizioni?</strong>
               <p>Dopo la chiusura non sarà possibile registrare nuovi partecipanti.</p>
+              <p>
+                Le richieste ancora in attesa di conferma non verranno
+                considerate partecipanti effettivi.
+              </p>
             </div>
           </div>
           <button
@@ -615,8 +738,9 @@ function OrganizerView({
                 <strong>Coffee Match</strong>
                 <p>
                   {participantsLoad.status === 'loaded' &&
-                  participants.length < 2
-                    ? 'Servono almeno due partecipanti per generare i match.'
+                  participants.filter((participant) => participant.confirmedAt)
+                    .length < 2
+                    ? 'Servono almeno due partecipanti confermati per generare i match.'
                     : 'Le iscrizioni sono chiuse. È possibile preparare gli abbinamenti.'}
                 </p>
               </div>
@@ -651,6 +775,9 @@ function OrganizerView({
 }
 
 function App() {
+  const initialConfirmationToken = new URLSearchParams(
+    window.location.search,
+  ).get('confirm')
   const [participants, setParticipants] = useState([])
   const [participantsLoad, setParticipantsLoad] = useState({
     userId: null,
@@ -667,14 +794,27 @@ function App() {
   const [supabaseClient, setSupabaseClient] = useState(null)
   const [eventState, setEventState] = useState({
     status: 'loading',
+    name: 'Coffee Match',
     registrationOpen: null,
     matchingCompleted: null,
   })
+  const [confirmationToken, setConfirmationToken] = useState(
+    initialConfirmationToken,
+  )
+  const [isConfirmationView, setIsConfirmationView] = useState(
+    Boolean(initialConfirmationToken),
+  )
+  const [confirmationStatus, setConfirmationStatus] = useState(
+    initialConfirmationToken ? 'loading' : 'idle',
+  )
+  const [confirmationMessage, setConfirmationMessage] = useState('')
   const [isClosingRegistrations, setIsClosingRegistrations] = useState(false)
   const [closureMessage, setClosureMessage] = useState(null)
   const [isResettingEvent, setIsResettingEvent] = useState(false)
   const [resetMessage, setResetMessage] = useState(null)
   const [resetVerificationMessage, setResetVerificationMessage] = useState('')
+  const [isSavingEventTitle, setIsSavingEventTitle] = useState(false)
+  const [eventTitleMessage, setEventTitleMessage] = useState(null)
   const [authSession, setAuthSession] = useState(null)
   const [authReady, setAuthReady] = useState(false)
   const [authSetupError, setAuthSetupError] = useState(false)
@@ -690,6 +830,8 @@ function App() {
   const isClosingRegistrationsRef = useRef(false)
   const isGeneratingMatchesRef = useRef(false)
   const isResettingEventRef = useRef(false)
+  const isSavingEventTitleRef = useRef(false)
+  const confirmedTokensRef = useRef(new Set())
 
   useEffect(() => {
     let active = true
@@ -740,6 +882,61 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!confirmationToken || confirmedTokensRef.current.has(confirmationToken)) {
+      return
+    }
+
+    confirmedTokensRef.current.add(confirmationToken)
+
+    async function confirmRegistration() {
+      let resultStatus = 'ERROR'
+
+      try {
+        const { supabase } = await import('./lib/supabase.js')
+        const { data, error } = await supabase.functions.invoke(
+          'confirm-registration',
+          {
+            body: {
+              token: confirmationToken,
+            },
+          },
+        )
+        const responseStatus = await getFunctionStatus(data, error)
+        const supportedStatuses = [
+          'REGISTRATION_CONFIRMED',
+          'ALREADY_CONFIRMED',
+          'REGISTRATION_CLOSED',
+          'INVALID_OR_EXPIRED_TOKEN',
+          'INVALID_CONFIRMATION_TOKEN',
+        ]
+        if (supportedStatuses.includes(responseStatus)) {
+          resultStatus = responseStatus
+        }
+      } catch {
+        resultStatus = 'ERROR'
+      }
+
+      setConfirmationStatus(resultStatus)
+      setConfirmationMessage(
+        resultStatus === 'ERROR'
+          ? 'Non è stato possibile confermare l’iscrizione.'
+          : '',
+      )
+
+      const currentUrl = new URL(window.location.href)
+      currentUrl.searchParams.delete('confirm')
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`,
+      )
+      setConfirmationToken(null)
+    }
+
+    confirmRegistration()
+  }, [confirmationToken])
+
   const authenticatedUserId = authSession?.user?.id
   const ownerStatus = authenticatedUserId
     ? ownerCheck.userId === authenticatedUserId
@@ -785,8 +982,10 @@ function App() {
         const { data: participantRows, error: participantsError } =
           await supabaseClient
             .from('participants')
-            .select('id, first_name, last_name, email, created_at')
-            .eq('event_id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
+            .select(
+              'id, first_name, last_name, email, created_at, confirmation_sent_at, confirmed_at',
+            )
+            .eq('event_id', eventId)
             .order('created_at', { ascending: true })
 
         if (!active) return
@@ -806,6 +1005,8 @@ function App() {
             lastName: participant.last_name,
             email: participant.email,
             createdAt: participant.created_at,
+            confirmationSentAt: participant.confirmation_sent_at,
+            confirmedAt: participant.confirmed_at,
           })),
         )
         setParticipantsLoad({ userId: authenticatedUserId, status: 'loaded' })
@@ -865,11 +1066,12 @@ function App() {
         if (!active) return
 
         if (error) {
-          setEventState({
+          setEventState((current) => ({
+            ...current,
             status: 'error',
             registrationOpen: null,
             matchingCompleted: null,
-          })
+          }))
           setSupabaseDiagnostic({
             type: 'error',
             message:
@@ -879,11 +1081,12 @@ function App() {
         }
 
         if (!data) {
-          setEventState({
+          setEventState((current) => ({
+            ...current,
             status: 'error',
             registrationOpen: null,
             matchingCompleted: null,
-          })
+          }))
           setSupabaseDiagnostic({
             type: 'error',
             message: 'Evento Coffee Match non trovato.',
@@ -893,6 +1096,7 @@ function App() {
 
         setEventState({
           status: 'loaded',
+          name: data.name,
           registrationOpen: data.registration_open,
           matchingCompleted: data.matching_completed,
         })
@@ -910,11 +1114,12 @@ function App() {
         })
       } catch {
         if (!active) return
-        setEventState({
+        setEventState((current) => ({
+          ...current,
           status: 'error',
           registrationOpen: null,
           matchingCompleted: null,
-        })
+        }))
         setSupabaseDiagnostic({
           type: 'error',
           message:
@@ -970,7 +1175,12 @@ function App() {
         }
 
         try {
-          setMatchGroups(groupPersistedMatches(data, participants))
+          setMatchGroups(
+            groupPersistedMatches(
+              data,
+              participants.filter((participant) => participant.confirmedAt),
+            ),
+          )
           setMatchesLoad({ userId: authenticatedUserId, status: 'loaded' })
           setMatchMessage(null)
         } catch {
@@ -1009,10 +1219,6 @@ function App() {
     participants,
   ])
 
-  function handleSignup(participant) {
-    setParticipants((currentParticipants) => [...currentParticipants, participant])
-  }
-
   async function handleResetEvent() {
     if (
       isResettingEventRef.current ||
@@ -1020,7 +1226,8 @@ function App() {
       !authSession ||
       !authenticatedUserId ||
       ownerStatus !== 'authorized' ||
-      ownerCheck.userId !== authenticatedUserId
+      ownerCheck.userId !== authenticatedUserId ||
+      eventState.status !== 'loaded'
     ) {
       return
     }
@@ -1056,6 +1263,7 @@ function App() {
       setClosureMessage(null)
       setEventState({
         status: 'loaded',
+        name: eventState.name,
         registrationOpen: true,
         matchingCompleted: false,
       })
@@ -1069,12 +1277,14 @@ function App() {
           await Promise.all([
             supabaseClient
               .from('events')
-              .select('registration_open, matching_completed')
+              .select('name, registration_open, matching_completed')
               .eq('id', eventId)
               .maybeSingle(),
             supabaseClient
               .from('participants')
-              .select('id, first_name, last_name, email, created_at')
+              .select(
+                'id, first_name, last_name, email, created_at, confirmation_sent_at, confirmed_at',
+              )
               .eq('event_id', eventId)
               .order('created_at', { ascending: true }),
             supabaseClient
@@ -1090,6 +1300,7 @@ function App() {
         if (eventResult.error || !eventResult.data) {
           setEventState({
             status: 'error',
+            name: eventState.name,
             registrationOpen: null,
             matchingCompleted: null,
           })
@@ -1097,6 +1308,7 @@ function App() {
         } else {
           setEventState({
             status: 'loaded',
+            name: eventResult.data.name,
             registrationOpen: eventResult.data.registration_open,
             matchingCompleted: eventResult.data.matching_completed,
           })
@@ -1116,6 +1328,8 @@ function App() {
               lastName: participant.last_name,
               email: participant.email,
               createdAt: participant.created_at,
+              confirmationSentAt: participant.confirmation_sent_at,
+              confirmedAt: participant.confirmed_at,
             }),
           )
           setParticipants(refreshedParticipants)
@@ -1155,6 +1369,7 @@ function App() {
       } catch {
         setEventState({
           status: 'error',
+          name: eventState.name,
           registrationOpen: null,
           matchingCompleted: null,
         })
@@ -1242,6 +1457,55 @@ function App() {
     }
   }
 
+  async function handleSaveEventTitle(title) {
+    if (
+      isSavingEventTitleRef.current ||
+      !supabaseClient ||
+      !authSession ||
+      !authenticatedUserId ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId
+    ) {
+      return
+    }
+
+    isSavingEventTitleRef.current = true
+    setIsSavingEventTitle(true)
+    setEventTitleMessage(null)
+
+    try {
+      const { data, error } = await supabaseClient
+        .from('events')
+        .update({ name: title })
+        .eq('id', eventId)
+        .eq('owner_id', authenticatedUserId)
+        .select('id, name')
+        .single()
+
+      if (error || !data) {
+        setEventTitleMessage({
+          type: 'error',
+          text: 'Non è stato possibile aggiornare il titolo dell’evento.',
+        })
+        return
+      }
+
+      setEventState((current) => ({ ...current, name: data.name }))
+      setEventTitleMessage({
+        type: 'success',
+        text: 'Titolo evento aggiornato.',
+      })
+    } catch {
+      setEventTitleMessage({
+        type: 'error',
+        text: 'Non è stato possibile aggiornare il titolo dell’evento.',
+      })
+    } finally {
+      isSavingEventTitleRef.current = false
+      setIsSavingEventTitle(false)
+    }
+  }
+
   async function handleGenerateMatches() {
     if (
       isGeneratingMatchesRef.current ||
@@ -1254,7 +1518,7 @@ function App() {
       eventState.matchingCompleted !== false ||
       participantsLoad.userId !== authenticatedUserId ||
       participantsLoad.status !== 'loaded' ||
-      participants.length < 2
+      participants.filter((participant) => participant.confirmedAt).length < 2
     ) {
       return
     }
@@ -1279,6 +1543,7 @@ function App() {
           .from('participants')
           .select('id, first_name, last_name')
           .eq('event_id', eventId)
+          .not('confirmed_at', 'is', null)
 
       if (participantsError || !participantRows || participantRows.length < 2) {
         setMatchMessage({
@@ -1464,6 +1729,11 @@ function App() {
     setIsOrganizerView(false)
   }
 
+  function handleReturnFromConfirmation() {
+    setIsConfirmationView(false)
+    setIsOrganizerView(false)
+  }
+
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -1501,16 +1771,27 @@ function App() {
         <span>{supabaseDiagnostic.message}</span>
       </aside>
 
-      {isOrganizerView ? (
+      {isConfirmationView ? (
+        <ConfirmationView
+          eventName={eventState.name}
+          status={confirmationStatus}
+          message={confirmationMessage}
+          onReturn={handleReturnFromConfirmation}
+        />
+      ) : isOrganizerView ? (
         !authReady ? (
           <OrganizerAccessStatus message="Verifica della sessione in corso..." />
         ) : authSession ? (
           ownerStatus === 'authorized' &&
           ownerCheck.userId === authenticatedUserId ? (
             <OrganizerView
+              eventName={eventState.name}
               eventStatus={eventState.status}
               isRegistrationOpen={isRegistrationOpen}
               matchingCompleted={eventState.matchingCompleted === true}
+              onSaveEventTitle={handleSaveEventTitle}
+              isSavingEventTitle={isSavingEventTitle}
+              eventTitleMessage={eventTitleMessage}
               onResetEvent={handleResetEvent}
               isResettingEvent={isResettingEvent}
               resetMessage={resetMessage}
@@ -1561,6 +1842,7 @@ function App() {
                 <span className="kicker-line" />
                 CONNESSIONI CHE INIZIANO DAVANTI A UN CAFFÈ
               </div>
+              <p className="public-event-title">{eventState.name}</p>
               <h1>
                 Le belle idee
                 <br />
@@ -1649,8 +1931,6 @@ function App() {
             isClosed={isEventClosed}
             isEventReady={isRegistrationOpen}
             isEventLoading={eventState.status === 'loading'}
-            onSignup={handleSignup}
-            participants={participants}
           />
         </main>
       )}
