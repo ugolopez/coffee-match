@@ -479,6 +479,10 @@ function OrganizerView({
   onCloseRegistrations,
   isClosingRegistrations,
   closureMessage,
+  isRegistrationClosed,
+  onSendClosureNotifications,
+  isSendingClosureNotifications,
+  closureNotificationMessage,
   canGenerateMatches,
   isGeneratingMatches,
   onGenerateMatches,
@@ -695,6 +699,44 @@ function OrganizerView({
           {closureMessage.text}
         </p>
       )}
+      {isRegistrationClosed && (
+        <div className="matching-panel">
+          <div className="matching-copy">
+            <span className="matching-icon" aria-hidden="true">✉</span>
+            <div>
+              <strong>Notifiche di chiusura</strong>
+              <p>
+                Invia un promemoria ai partecipanti confermati che non hanno
+                ancora ricevuto l’email.
+              </p>
+            </div>
+          </div>
+          <button
+            className="button button-primary"
+            disabled={
+              isClosingRegistrations || isSendingClosureNotifications
+            }
+            onClick={onSendClosureNotifications}
+            type="button"
+          >
+            {isClosingRegistrations
+              ? 'Chiusura in corso…'
+              : isSendingClosureNotifications
+                ? 'Invio notifiche...'
+                : 'Invia notifiche di chiusura'}
+          </button>
+        </div>
+      )}
+      {closureNotificationMessage && (
+        <p
+          className={`form-message ${closureNotificationMessage.type}`}
+          role={
+            closureNotificationMessage.type === 'error' ? 'alert' : 'status'
+          }
+        >
+          {closureNotificationMessage.text}
+        </p>
+      )}
       {matchingCompleted || matchGroups.length > 0 ? (
         <div className="matching-results">
           <div className="organizer-section-heading">
@@ -830,6 +872,10 @@ function App() {
   const [confirmationMessage, setConfirmationMessage] = useState('')
   const [isClosingRegistrations, setIsClosingRegistrations] = useState(false)
   const [closureMessage, setClosureMessage] = useState(null)
+  const [isSendingClosureNotifications, setIsSendingClosureNotifications] =
+    useState(false)
+  const [closureNotificationMessage, setClosureNotificationMessage] =
+    useState(null)
   const [isResettingEvent, setIsResettingEvent] = useState(false)
   const [resetMessage, setResetMessage] = useState(null)
   const [resetVerificationMessage, setResetVerificationMessage] = useState('')
@@ -848,6 +894,7 @@ function App() {
     message: 'Verifica connessione...',
   })
   const isClosingRegistrationsRef = useRef(false)
+  const isSendingClosureNotificationsRef = useRef(false)
   const isGeneratingMatchesRef = useRef(false)
   const isResettingEventRef = useRef(false)
   const isSavingEventTitleRef = useRef(false)
@@ -1508,6 +1555,105 @@ function App() {
     }
   }
 
+  async function handleSendClosureNotifications() {
+    if (
+      isSendingClosureNotificationsRef.current ||
+      isClosingRegistrationsRef.current ||
+      !supabaseClient ||
+      !authSession ||
+      !authenticatedUserId ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId ||
+      eventState.status !== 'loaded' ||
+      eventState.registrationOpen !== false
+    ) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      'Vuoi inviare le notifiche di chiusura ai partecipanti confermati che non le hanno ancora ricevute?',
+    )
+    if (!confirmed) return
+
+    isSendingClosureNotificationsRef.current = true
+    setIsSendingClosureNotifications(true)
+    setClosureNotificationMessage(null)
+
+    try {
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabaseClient.auth.getSession()
+
+      if (sessionError || !session?.access_token) {
+        setClosureNotificationMessage({
+          type: 'error',
+          text: 'La sessione organizzatore non è valida. Accedi nuovamente.',
+        })
+        return
+      }
+
+      const { data, error } = await supabaseClient.functions.invoke(
+        'notify-registration-closed',
+        {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: {
+            event_id: eventId,
+          },
+        },
+      )
+
+      if (error) {
+        setClosureNotificationMessage({
+          type: 'error',
+          text: 'Non è stato possibile inviare le email di notifica.',
+        })
+        return
+      }
+
+      const recipients = Number(data?.summary?.recipients ?? 0)
+      const sent = Number(data?.summary?.sent ?? 0)
+      const failed = Number(data?.summary?.failed ?? 0)
+
+      if (recipients === 0) {
+        setClosureNotificationMessage({
+          type: 'success',
+          text: 'Nessuna notifica di chiusura ancora da inviare.',
+        })
+      } else if (sent === recipients && failed === 0 && recipients > 0) {
+        setClosureNotificationMessage({
+          type: 'success',
+          text: `Email inviate a ${sent} partecipanti su ${recipients}.`,
+        })
+      } else if (sent > 0 && failed > 0) {
+        setClosureNotificationMessage({
+          type: 'error',
+          text: `Email inviate a ${sent} partecipanti su ${recipients}. ${failed} invii non riusciti.`,
+        })
+      } else if (sent === 0 && failed > 0) {
+        setClosureNotificationMessage({
+          type: 'error',
+          text: `Non è stato possibile inviare ${failed} email di notifica.`,
+        })
+      } else {
+        setClosureNotificationMessage({
+          type: 'error',
+          text: 'Non è stato possibile inviare le email di notifica.',
+        })
+      }
+    } catch {
+      setClosureNotificationMessage({
+        type: 'error',
+        text: 'Non è stato possibile inviare le email di notifica.',
+      })
+    } finally {
+      isSendingClosureNotificationsRef.current = false
+      setIsSendingClosureNotifications(false)
+    }
+  }
+
   async function handleCloseRegistrations() {
     if (
       isClosingRegistrationsRef.current ||
@@ -1558,10 +1704,66 @@ function App() {
         type: 'error',
         message: 'Connessione stabilita, ma le iscrizioni per Coffee Match sono chiuse.',
       })
-      setClosureMessage({
-        type: 'success',
-        text: 'Iscrizioni chiuse.',
-      })
+
+      try {
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabaseClient.auth.getSession()
+
+        if (sessionError || !session?.access_token) {
+          setClosureMessage({
+            type: 'success',
+            text: 'Iscrizioni chiuse, ma la sessione organizzatore deve essere aggiornata per inviare le email.',
+          })
+          return
+        }
+
+        const { data: notificationSummary, error: notificationError } =
+          await supabaseClient.functions.invoke(
+            'notify-registration-closed',
+            {
+              headers: {
+                Authorization: `Bearer ${session.access_token}`,
+              },
+              body: {
+                event_id: eventId,
+              },
+            },
+          )
+
+        const { recipients, sent, failed } = notificationSummary || {}
+        const validSummary = [recipients, sent, failed].every(
+          (count) => Number.isInteger(count) && count >= 0,
+        )
+
+        if (notificationError || !validSummary) {
+          setClosureMessage({
+            type: 'success',
+            text: 'Iscrizioni chiuse, ma non è stato possibile inviare le email di notifica.',
+          })
+        } else if (recipients === 0) {
+          setClosureMessage({
+            type: 'success',
+            text: 'Iscrizioni chiuse. Nessun partecipante confermato da notificare.',
+          })
+        } else if (failed > 0) {
+          setClosureMessage({
+            type: 'success',
+            text: `Iscrizioni chiuse. Email inviate a ${sent} partecipanti su ${recipients}. ${failed} invii non riusciti.`,
+          })
+        } else {
+          setClosureMessage({
+            type: 'success',
+            text: `Iscrizioni chiuse. Email inviate a ${sent} partecipanti su ${recipients}.`,
+          })
+        }
+      } catch {
+        setClosureMessage({
+          type: 'success',
+          text: 'Iscrizioni chiuse, ma non è stato possibile inviare le email di notifica.',
+        })
+      }
     } catch {
       setClosureMessage({
         type: 'error',
@@ -1814,6 +2016,8 @@ function App() {
     eventState.status === 'loaded' &&
     (eventState.registrationOpen === false ||
       eventState.matchingCompleted === true)
+  const isRegistrationClosed =
+    eventState.status === 'loaded' && eventState.registrationOpen === false
   const currentMatchesLoad =
     matchesLoad.userId === authenticatedUserId
       ? matchesLoad
@@ -1916,6 +2120,10 @@ function App() {
               onCloseRegistrations={handleCloseRegistrations}
               isClosingRegistrations={isClosingRegistrations}
               closureMessage={closureMessage}
+              isRegistrationClosed={isRegistrationClosed}
+              onSendClosureNotifications={handleSendClosureNotifications}
+              isSendingClosureNotifications={isSendingClosureNotifications}
+              closureNotificationMessage={closureNotificationMessage}
               canGenerateMatches={canGenerateMatches}
               isGeneratingMatches={isGeneratingMatches}
               onGenerateMatches={handleGenerateMatches}
