@@ -124,6 +124,39 @@
   font-size: 15px;
 }
 
+.connection-diagnostic {
+  display: flex;
+  width: min(1200px, calc(100% - 96px));
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  margin: 10px auto 0;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  background: #faf8f3;
+  color: #74695e;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.connection-diagnostic strong {
+  flex: 0 0 auto;
+  color: var(--coffee);
+  font-size: 10px;
+}
+
+.connection-diagnostic.success {
+  border-color: #dce5d8;
+  background: #f5f8f2;
+  color: #55704d;
+}
+
+.connection-diagnostic.error {
+  border-color: #eadfd4;
+  background: #fbf8f2;
+  color: #805d43;
+}
+
 .public-page,
 .organizer-page {
   width: min(1200px, calc(100% - 96px));
@@ -1085,7 +1118,8 @@
   .site-header,
   .site-footer,
   .public-page,
-  .organizer-page {
+  .organizer-page,
+  .connection-diagnostic {
     width: min(100% - 48px, 680px);
   }
 
@@ -1139,7 +1173,8 @@
   .site-header,
   .site-footer,
   .public-page,
-  .organizer-page {
+  .organizer-page,
+  .connection-diagnostic {
     width: calc(100% - 36px);
   }
 
@@ -1169,6 +1204,12 @@
     gap: 6px;
     padding: 9px 10px;
     font-size: 10px;
+  }
+
+  .connection-diagnostic {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .hero-section {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const initialForm = { firstName: '', lastName: '', email: '' }
@@ -43,6 +43,7 @@ function CoffeeMark() {
 function SignupForm({ isClosed, participants, onSignup }) {
   const [form, setForm] = useState(initialForm)
   const [message, setMessage] = useState(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   function handleChange(event) {
     const { name, value } = event.target
@@ -50,10 +51,10 @@ function SignupForm({ isClosed, participants, onSignup }) {
     setMessage(null)
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
 
-    if (isClosed) return
+    if (isClosed || isSubmitting) return
 
     const normalizedEmail = form.email.trim().toLowerCase()
     const emailExists = participants.some(
@@ -68,16 +69,81 @@ function SignupForm({ isClosed, participants, onSignup }) {
       return
     }
 
-    onSignup({
-      firstName: form.firstName.trim(),
-      lastName: form.lastName.trim(),
-      email: normalizedEmail,
-    })
-    setForm(initialForm)
-    setMessage({
-      type: 'success',
-      text: 'Iscrizione completata! Ci vediamo al Coffee Match.',
-    })
+    setIsSubmitting(true)
+
+    try {
+      const { supabase } = await import('./lib/supabase.js')
+      const { data: eventData, error: eventError } = await supabase
+        .from('events')
+        .select('registration_open, matching_completed')
+        .eq('id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
+        .maybeSingle()
+
+      if (eventError) {
+        setMessage({
+          type: 'error',
+          text: 'Non è stato possibile verificare lo stato delle iscrizioni. Riprova.',
+        })
+        return
+      }
+
+      if (!eventData) {
+        setMessage({
+          type: 'error',
+          text: 'L’evento Coffee Match non è disponibile per le iscrizioni.',
+        })
+        return
+      }
+
+      if (
+        eventData.registration_open !== true ||
+        eventData.matching_completed !== false
+      ) {
+        setMessage({
+          type: 'error',
+          text: 'Le iscrizioni a questo evento sono chiuse.',
+        })
+        return
+      }
+
+      const { error: insertError } = await supabase
+        .from('participants')
+        .insert({
+          event_id: '46869c0f-21ae-4d70-9865-5f72d87c1153',
+          first_name: form.firstName.trim(),
+          last_name: form.lastName.trim(),
+          email: form.email.trim(),
+        })
+
+      if (insertError) {
+        setMessage({
+          type: 'error',
+          text:
+            insertError.code === '23505'
+              ? 'Questa email risulta già iscritta al Coffee Match.'
+              : 'Non è stato possibile completare l’iscrizione. Riprova.',
+        })
+        return
+      }
+
+      onSignup({
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+        email: normalizedEmail,
+      })
+      setForm(initialForm)
+      setMessage({
+        type: 'success',
+        text: 'Iscrizione completata! Ci vediamo al Coffee Match.',
+      })
+    } catch {
+      setMessage({
+        type: 'error',
+        text: 'Non è stato possibile collegarsi per completare l’iscrizione. Riprova.',
+      })
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -143,9 +209,13 @@ function SignupForm({ isClosed, participants, onSignup }) {
               {message.text}
             </p>
           )}
-          <button className="button button-primary signup-button" type="submit">
-            Iscriviti al Coffee Match
-            <span aria-hidden="true">→</span>
+          <button
+            className="button button-primary signup-button"
+            disabled={isSubmitting}
+            type="submit"
+          >
+            {isSubmitting ? 'Iscrizione in corso...' : 'Iscriviti al Coffee Match'}
+            {!isSubmitting && <span aria-hidden="true">→</span>}
           </button>
           <p className="privacy-note">
             I tuoi dati servono solo per organizzare gli abbinamenti di questo
@@ -346,6 +416,59 @@ function App() {
   const [isClosed, setIsClosed] = useState(false)
   const [matches, setMatches] = useState(null)
   const [isOrganizerView, setIsOrganizerView] = useState(false)
+  const [supabaseDiagnostic, setSupabaseDiagnostic] = useState({
+    type: 'loading',
+    message: 'Verifica connessione...',
+  })
+  const hasCheckedSupabase = useRef(false)
+
+  useEffect(() => {
+    if (hasCheckedSupabase.current) return
+    hasCheckedSupabase.current = true
+
+    async function checkSupabaseConnection() {
+      try {
+        const { supabase } = await import('./lib/supabase.js')
+        const { data, error } = await supabase
+          .from('events')
+          .select('id, name, registration_open, matching_completed')
+          .eq('id', '46869c0f-21ae-4d70-9865-5f72d87c1153')
+          .maybeSingle()
+
+        if (error) {
+          setSupabaseDiagnostic({
+            type: 'error',
+            message:
+              'Lettura dell’evento non riuscita. Verifica connessione e permessi.',
+          })
+          return
+        }
+
+        if (!data) {
+          setSupabaseDiagnostic({
+            type: 'error',
+            message: 'Evento Coffee Match non trovato.',
+          })
+          return
+        }
+
+        setSupabaseDiagnostic({
+          type: data.registration_open ? 'success' : 'error',
+          message: data.registration_open
+            ? 'Supabase connesso - Coffee Match - Iscrizioni aperte'
+            : 'Connessione stabilita, ma le iscrizioni per Coffee Match sono chiuse.',
+        })
+      } catch {
+        setSupabaseDiagnostic({
+          type: 'error',
+          message:
+            'Connessione Supabase non riuscita. Verifica la configurazione richiesta.',
+        })
+      }
+    }
+
+    checkSupabaseConnection()
+  }, [])
 
   function handleSignup(participant) {
     setParticipants((currentParticipants) => [...currentParticipants, participant])
@@ -392,6 +515,14 @@ function App() {
           </button>
         </div>
       </header>
+
+      <aside
+        aria-live="polite"
+        className={`connection-diagnostic ${supabaseDiagnostic.type}`}
+      >
+        <strong>Connessione Supabase</strong>
+        <span>{supabaseDiagnostic.message}</span>
+      </aside>
 
       {isOrganizerView ? (
         <OrganizerView
