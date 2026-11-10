@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const initialForm = { firstName: '', lastName: '', email: '' }
@@ -487,6 +487,8 @@ function OrganizerView({
   matchMessage,
   participants,
   participantsLoad,
+  onRefreshParticipants,
+  participantsRefreshMessage,
 }) {
   const confirmedParticipants = participants.filter(
     (participant) => participant.confirmedAt,
@@ -596,14 +598,31 @@ function OrganizerView({
             <div className="section-eyebrow">La community</div>
             <h3>Partecipanti</h3>
           </div>
-          <span className="participant-count">
-            {participantsLoad.status === 'loaded'
-              ? `${confirmedParticipants.length} confermati · ${pendingParticipants.length} in attesa`
-              : participantsLoad.status === 'loading'
-                ? 'Caricamento…'
-                : 'Non disponibile'}
-          </span>
+          <div className="participants-heading-actions">
+            <span className="participant-count">
+              {participantsLoad.status === 'loaded'
+                ? `${confirmedParticipants.length} confermati · ${pendingParticipants.length} in attesa`
+                : participantsLoad.status === 'loading'
+                  ? 'Caricamento…'
+                  : 'Non disponibile'}
+            </span>
+            <button
+              className="button button-quiet refresh-participants-button"
+              disabled={participantsLoad.status === 'loading'}
+              onClick={onRefreshParticipants}
+              type="button"
+            >
+              {participantsLoad.status === 'loading'
+                ? 'Aggiornamento...'
+                : 'Aggiorna partecipanti'}
+            </button>
+          </div>
         </div>
+        {participantsRefreshMessage && (
+          <p className="form-message error" role="alert">
+            {participantsRefreshMessage}
+          </p>
+        )}
         {participantsLoad.status === 'loading' ? (
           <div className="empty-state" role="status">
             <strong>Caricamento partecipanti…</strong>
@@ -783,6 +802,7 @@ function App() {
     userId: null,
     status: 'idle',
   })
+  const [participantsRefreshMessage, setParticipantsRefreshMessage] = useState('')
   const [matchGroups, setMatchGroups] = useState([])
   const [matchesLoad, setMatchesLoad] = useState({
     userId: null,
@@ -832,6 +852,8 @@ function App() {
   const isResettingEventRef = useRef(false)
   const isSavingEventTitleRef = useRef(false)
   const confirmedTokensRef = useRef(new Set())
+  const participantsLoadRequestRef = useRef(null)
+  const participantsLastRefreshRef = useRef(0)
 
   useEffect(() => {
     let active = true
@@ -944,6 +966,88 @@ function App() {
       : 'checking'
     : 'idle'
 
+  const loadParticipants = useCallback(
+    async (force = false) => {
+      if (
+        !supabaseClient ||
+        !authenticatedUserId ||
+        !isOrganizerView ||
+        ownerStatus !== 'authorized' ||
+        ownerCheck.userId !== authenticatedUserId
+      ) {
+        return false
+      }
+
+      if (participantsLoadRequestRef.current) {
+        return participantsLoadRequestRef.current
+      }
+
+      const now = Date.now()
+      if (!force && now - participantsLastRefreshRef.current < 750) {
+        return true
+      }
+      participantsLastRefreshRef.current = now
+
+      const userId = authenticatedUserId
+      setParticipantsLoad({ userId, status: 'loading' })
+
+      const request = (async () => {
+        try {
+          const { data, error } = await supabaseClient
+            .from('participants')
+            .select(
+              'id, first_name, last_name, email, created_at, confirmation_sent_at, confirmed_at',
+            )
+            .eq('event_id', eventId)
+            .order('created_at', { ascending: true })
+
+          if (
+            !isOrganizerView ||
+            authenticatedUserId !== userId ||
+            ownerStatus !== 'authorized' ||
+            ownerCheck.userId !== userId
+          ) {
+            return false
+          }
+
+          if (error || !data) {
+            setParticipantsLoad({ userId, status: 'error' })
+            return false
+          }
+
+          setParticipants(
+            data.map((participant) => ({
+              id: participant.id,
+              firstName: participant.first_name,
+              lastName: participant.last_name,
+              email: participant.email,
+              createdAt: participant.created_at,
+              confirmationSentAt: participant.confirmation_sent_at,
+              confirmedAt: participant.confirmed_at,
+            })),
+          )
+          setParticipantsLoad({ userId, status: 'loaded' })
+          return true
+        } catch {
+          setParticipantsLoad({ userId, status: 'error' })
+          return false
+        } finally {
+          participantsLoadRequestRef.current = null
+        }
+      })()
+
+      participantsLoadRequestRef.current = request
+      return request
+    },
+    [
+      supabaseClient,
+      authenticatedUserId,
+      isOrganizerView,
+      ownerStatus,
+      ownerCheck.userId,
+    ],
+  )
+
   useEffect(() => {
     if (!supabaseClient || !authenticatedUserId) return
 
@@ -977,46 +1081,6 @@ function App() {
       setMatchGroups([])
       setMatchesLoad({ userId: authenticatedUserId, status: 'idle' })
       setMatchMessage(null)
-
-      try {
-        const { data: participantRows, error: participantsError } =
-          await supabaseClient
-            .from('participants')
-            .select(
-              'id, first_name, last_name, email, created_at, confirmation_sent_at, confirmed_at',
-            )
-            .eq('event_id', eventId)
-            .order('created_at', { ascending: true })
-
-        if (!active) return
-
-        if (participantsError) {
-          setParticipantsLoad({
-            userId: authenticatedUserId,
-            status: 'error',
-          })
-          return
-        }
-
-        setParticipants(
-          participantRows.map((participant) => ({
-            id: participant.id,
-            firstName: participant.first_name,
-            lastName: participant.last_name,
-            email: participant.email,
-            createdAt: participant.created_at,
-            confirmationSentAt: participant.confirmation_sent_at,
-            confirmedAt: participant.confirmed_at,
-          })),
-        )
-        setParticipantsLoad({ userId: authenticatedUserId, status: 'loaded' })
-      } catch {
-        if (!active) return
-        setParticipantsLoad({
-          userId: authenticatedUserId,
-          status: 'error',
-        })
-      }
     }
 
     async function denyEventAccess(message) {
@@ -1050,6 +1114,48 @@ function App() {
       active = false
     }
   }, [supabaseClient, authenticatedUserId])
+
+  useEffect(() => {
+    if (
+      !supabaseClient ||
+      !authenticatedUserId ||
+      !isOrganizerView ||
+      ownerStatus !== 'authorized' ||
+      ownerCheck.userId !== authenticatedUserId
+    ) {
+      return
+    }
+
+    loadParticipants()
+
+    function refreshOnFocus() {
+      loadParticipants()
+    }
+
+    function refreshOnVisibilityChange() {
+      if (document.visibilityState === 'visible') {
+        loadParticipants()
+      }
+    }
+
+    window.addEventListener('focus', refreshOnFocus)
+    document.addEventListener('visibilitychange', refreshOnVisibilityChange)
+
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus)
+      document.removeEventListener(
+        'visibilitychange',
+        refreshOnVisibilityChange,
+      )
+    }
+  }, [
+    supabaseClient,
+    authenticatedUserId,
+    isOrganizerView,
+    ownerStatus,
+    ownerCheck.userId,
+    loadParticipants,
+  ])
 
   useEffect(() => {
     if (!supabaseClient) return
@@ -1392,6 +1498,16 @@ function App() {
     }
   }
 
+  async function handleRefreshParticipants() {
+    setParticipantsRefreshMessage('')
+    const refreshed = await loadParticipants(true)
+    if (!refreshed) {
+      setParticipantsRefreshMessage(
+        'Non è stato possibile aggiornare i partecipanti.',
+      )
+    }
+  }
+
   async function handleCloseRegistrations() {
     if (
       isClosingRegistrationsRef.current ||
@@ -1713,7 +1829,7 @@ function App() {
     eventState.matchingCompleted === false &&
     participantsLoad.userId === authenticatedUserId &&
     participantsLoad.status === 'loaded' &&
-    participants.length >= 2 &&
+    participants.filter((participant) => participant.confirmedAt).length >= 2 &&
     currentMatchesLoad.status !== 'loaded'
 
   function handleViewToggle() {
@@ -1812,6 +1928,8 @@ function App() {
                   ? participantsLoad
                   : { userId: authenticatedUserId, status: 'loading' }
               }
+              onRefreshParticipants={handleRefreshParticipants}
+              participantsRefreshMessage={participantsRefreshMessage}
             />
           ) : (
             <OrganizerAccessStatus
